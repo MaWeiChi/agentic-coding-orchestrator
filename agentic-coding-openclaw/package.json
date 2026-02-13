@@ -1,0 +1,19 @@
+{
+  "name": "@agentic-coding/openclaw-core",
+  "version": "0.1.0",
+  "description": "Orchestrator core for the Agentic Coding Protocol — state machine, rules table, dispatch logic",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "files": ["dist"],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}
