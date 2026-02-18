@@ -84,9 +84,9 @@ describe("rules", () => {
 
   describe("resolvePaths", () => {
     it("replaces {story} placeholder", () => {
-      const paths = ["docs/bdd/US-{story}.md", "docs/sdd/sdd.md"];
+      const paths = ["docs/bdd/US-{story}.md", "docs/sdd.md"];
       const resolved = resolvePaths(paths, "US-005");
-      expect(resolved).toEqual(["docs/bdd/US-US-005.md", "docs/sdd/sdd.md"]);
+      expect(resolved).toEqual(["docs/bdd/US-US-005.md", "docs/sdd.md"]);
     });
 
     it("handles multiple placeholders in one path", () => {

@@ -86,7 +86,6 @@ export const STEP_RULES: Record<Exclude<Step, "bootstrap" | "done">, StepRule> =
     claude_reads: [
       "PROJECT_CONTEXT.md",
       "PROJECT_MEMORY.md",
-      "docs/sdd/sdd.md",
       ".ai/HANDOFF.md",
     ],
     claude_writes: ["docs/bdd/US-{story}.md"],
@@ -109,7 +108,7 @@ export const STEP_RULES: Record<Exclude<Step, "bootstrap" | "done">, StepRule> =
       "PROJECT_CONTEXT.md",
       "PROJECT_MEMORY.md",
       "docs/bdd/US-{story}.md",
-      "docs/sdd/sdd.md",
+      "docs/sdd.md",
       ".ai/HANDOFF.md",
     ],
     claude_writes: ["docs/deltas/US-{story}.md"],
@@ -128,7 +127,7 @@ export const STEP_RULES: Record<Exclude<Step, "bootstrap" | "done">, StepRule> =
     timeout_min: 5,
     requires_human: false,
     claude_reads: [
-      "docs/sdd/sdd.md",
+      "docs/sdd.md",
       "docs/deltas/US-{story}.md",
       "docs/api/openapi.yaml",
       ".ai/HANDOFF.md",
@@ -193,7 +192,7 @@ export const STEP_RULES: Record<Exclude<Step, "bootstrap" | "done">, StepRule> =
     requires_human: false,
     claude_reads: [
       "docs/bdd/US-{story}.md",
-      "docs/sdd/sdd.md",
+      "docs/sdd.md",
       "docs/api/openapi.yaml",
       ".ai/HANDOFF.md",
     ],
@@ -215,7 +214,7 @@ export const STEP_RULES: Record<Exclude<Step, "bootstrap" | "done">, StepRule> =
     claude_reads: [
       "docs/bdd/US-{story}.md",
       "docs/deltas/US-{story}.md",
-      "docs/sdd/sdd.md",
+      "docs/sdd.md",
       "docs/api/openapi.yaml",
       "docs/constitution.md",
       ".ai/HANDOFF.md",
@@ -237,12 +236,14 @@ export const STEP_RULES: Record<Exclude<Step, "bootstrap" | "done">, StepRule> =
     max_attempts: 2,
     timeout_min: 3,
     requires_human: false,
-    claude_reads: ["PROJECT_MEMORY.md"],
-    claude_writes: ["PROJECT_MEMORY.md"],
+    claude_reads: ["PROJECT_MEMORY.md", ".ai/HANDOFF.md"],
+    claude_writes: ["PROJECT_MEMORY.md", ".ai/history.md"],
     post_check: null,
     step_instruction:
-      "Update MEMORY's DONE/TESTS/LOG/NEXT based on completed work. " +
-      "Clear or update NOW. Record current git commit hash.",
+      "Update MEMORY's NOW/NEXT based on completed work. " +
+      "Append DONE + LOG entry to .ai/history.md (session archive). " +
+      "Overwrite .ai/HANDOFF.md with latest session summary. " +
+      "Record current git commit hash.",
   },
 };
 
@@ -258,7 +259,7 @@ export const BOOTSTRAP_RULE: StepRule = {
   claude_reads: [],
   claude_writes: [
     "PROJECT_CONTEXT.md",
-    "docs/sdd/sdd.md",
+    "docs/sdd.md",
     "docs/constitution.md",
     "PROJECT_MEMORY.md",
   ],
@@ -266,7 +267,7 @@ export const BOOTSTRAP_RULE: StepRule = {
   step_instruction:
     "Set up the project using the Agentic Coding Framework. Produce: " +
     "PROJECT_CONTEXT.md (Why/Who/What + tech stack + project structure), " +
-    "docs/sdd/sdd.md (module division + data model skeleton + inter-module interfaces), " +
+    "docs/sdd.md (module division + data model skeleton + inter-module interfaces), " +
     "docs/constitution.md (3-5 inviolable architectural principles), " +
     "PROJECT_MEMORY.md (initial state). " +
     "Create directory structure: docs/bdd/, docs/deltas/, docs/api/, docs/ddd/ (if multi-domain).",
@@ -278,7 +279,7 @@ export const DEFAULT_TEAM_ROLES: Record<string, TeamRoles> = {
   impl: {
     backend: {
       claude_reads: [
-        "docs/sdd/sdd.md",
+        "docs/sdd.md",
         "docs/api/openapi.yaml",
         "internal/**/*.go",
       ],

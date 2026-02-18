@@ -1,7 +1,9 @@
-# OpenClaw Orchestrator — Protocol Reference
+# Orchestrator — Protocol Reference
+
+> Derived from: Framework Protocol v0.8 (2026-02-18)
 
 This reference maps the Agentic Coding Protocol concepts to the actual TypeScript
-implementation in `agentic-coding-openclaw/src/`. Use this when configuring,
+implementation in `agentic-coding-orchestrator/src/`. Use this when configuring,
 extending, or debugging the orchestrator pipeline.
 
 ---
@@ -151,7 +153,7 @@ const DISPATCH_MODES = { S: "single", M: "auto", L: "team" };
 
 ```typescript
 DEFAULT_TEAM_ROLES.impl = {
-  backend:  { claude_reads: ["docs/sdd/sdd.md", "docs/api/openapi.yaml", "internal/**/*.go"],
+  backend:  { claude_reads: ["docs/sdd.md", "docs/api/openapi.yaml", "internal/**/*.go"],
               claude_writes: ["*.go"] },
   frontend: { claude_reads: ["docs/api/openapi.yaml", "src/components/**"],
               claude_writes: ["*.ts", "*.tsx"] },
@@ -287,14 +289,14 @@ Post-hook equivalent. Call after executor exits:
 ## Integration: Orchestrator Main Loop
 
 The three modules compose into a simple main loop. Here's the pattern for any
-orchestrator (OpenClaw, CLI tool, Telegram bot, etc.):
+orchestrator (CLI tool, Telegram bot, etc.):
 
 ```typescript
 import {
   initState, readState,
   dispatch, applyHandoff, runPostCheck,
   approveReview, startStory,
-} from "@agentic-coding/openclaw-core";
+} from "@agentic-coding/orchestrator-core";
 import { execSync } from "child_process";
 
 // 1. Initialize
@@ -377,7 +379,7 @@ update STATE.json.
 Projects can override defaults by modifying the rules table. Common customizations:
 
 ```typescript
-import { STEP_RULES } from "@agentic-coding/openclaw-core";
+import { STEP_RULES } from "@agentic-coding/orchestrator-core";
 
 // Frontend project: change post_check
 STEP_RULES.impl.post_check = "eslint . && tsc --noEmit";
