@@ -3,20 +3,21 @@
  * cli.ts — CLI entry point for the Agentic Coding Orchestrator
  *
  * Commands:
- *   init <project-root> <project-name>     Initialize .ai/STATE.json
- *   start-story <project-root> <story-id>  Begin a new User Story
- *   dispatch <project-root>                Dispatch next step (prints prompt)
- *   apply-handoff <project-root>           Parse HANDOFF.md → update STATE
- *   approve <project-root> [note]          Approve review step
- *   reject <project-root> <reason> [note]  Reject review step
- *   status <project-root>                  Print current STATE.json
+ *   init <project-root> <project-name>          Initialize .ai/STATE.json
+ *   start-story <project-root> <story-id>       Begin a new User Story (micro-waterfall)
+ *   start-custom <project-root> <instruction>   Begin a custom ad-hoc task
+ *   dispatch <project-root>                     Dispatch next step (prints prompt)
+ *   apply-handoff <project-root>                Parse HANDOFF.md → update STATE
+ *   approve <project-root> [note]               Approve review step
+ *   reject <project-root> <reason> [note]       Reject review step
+ *   status <project-root>                       Print current STATE.json
  */
 
 import { resolve } from "path";
 import { execSync } from "child_process";
 
 import { initState, readState } from "./state";
-import { dispatch, applyHandoff, runPostCheck, approveReview, rejectReview, startStory } from "./dispatch";
+import { dispatch, applyHandoff, runPostCheck, approveReview, rejectReview, startStory, startCustom } from "./dispatch";
 import type { Reason } from "./state";
 
 const [, , command, ...args] = process.argv;
@@ -25,9 +26,10 @@ function usage(): never {
   console.error(`Usage: orchestrator <command> [args]
 
 Commands:
-  init <project-root> <project-name>     Initialize .ai/STATE.json
-  start-story <project-root> <story-id>  Begin a new User Story
-  dispatch <project-root>                Dispatch next step (prints prompt to stdout)
+  init <project-root> <project-name>              Initialize .ai/STATE.json
+  start-story <project-root> <story-id>           Begin a new User Story (micro-waterfall)
+  start-custom <project-root> <instruction>       Begin a custom ad-hoc task
+  dispatch <project-root>                         Dispatch next step (prints prompt to stdout)
   apply-handoff <project-root>           Parse HANDOFF.md → update STATE.json
   post-check <project-root>              Run step's post_check command
   approve <project-root> [note]          Approve review step
@@ -72,6 +74,21 @@ try {
       }
       const state = startStory(projectRoot, storyId);
       console.log(`Started story ${storyId} (step: ${state.step}, attempt: ${state.attempt})`);
+      break;
+    }
+
+    case "start-custom": {
+      const projectRoot = resolveRoot(args[0]);
+      const instruction = args[1];
+      if (!instruction) {
+        console.error("Error: <instruction> is required");
+        console.error('Example: orchestrator start-custom ./project "Refactor auth module into separate package"');
+        process.exit(1);
+      }
+      const label = args[2] || undefined; // optional label
+      const state = startCustom(projectRoot, instruction, label);
+      console.log(`Started custom task: "${instruction}"`);
+      console.log(`  label: ${state.story}, step: ${state.step}, task_type: ${state.task_type}`);
       break;
     }
 

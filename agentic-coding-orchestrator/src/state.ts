@@ -21,7 +21,11 @@ export type Step =
   | "impl"
   | "verify"
   | "update-memory"
+  | "custom"
   | "done";
+
+/** Task type determines which pipeline to follow */
+export type TaskType = "story" | "custom";
 
 /** STATE.json status state machine:
  *  pending → running → pass | failing | timeout | needs_human */
@@ -90,6 +94,9 @@ export interface State {
   blocked_by: string[];
   /** Human instruction transcribed from communication channel */
   human_note: string | null;
+
+  /** Task type: "story" for micro-waterfall, "custom" for ad-hoc tasks */
+  task_type: TaskType;
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
@@ -113,6 +120,7 @@ export function createInitialState(project: string): State {
     files_changed: [],
     blocked_by: [],
     human_note: null,
+    task_type: "story",
   };
 }
 
@@ -172,6 +180,7 @@ const VALID_STEPS: Set<string> = new Set<Step>([
   "impl",
   "verify",
   "update-memory",
+  "custom",
   "done",
 ]);
 

@@ -570,6 +570,47 @@ export function startStory(projectRoot: string, storyId: string): State {
   return state;
 }
 
+// ─── Start Custom Task ──────────────────────────────────────────────────────
+
+/**
+ * Begin a custom (ad-hoc) task. The orchestrator forwards the instruction
+ * to Claude Code with full project context, without going through the
+ * micro-waterfall pipeline.
+ *
+ * Pipeline: custom → update-memory → done
+ *
+ * Use cases: refactoring, code review, bug fix, DevOps, documentation,
+ * testing, migration, performance optimization, security, cleanup, etc.
+ */
+export function startCustom(
+  projectRoot: string,
+  instruction: string,
+  label?: string
+): State {
+  const state = readState(projectRoot);
+  const rule = getRule("custom");
+
+  state.story = label ?? `CUSTOM-${Date.now()}`;
+  state.step = "custom";
+  state.attempt = 1;
+  state.max_attempts = rule.max_attempts;
+  state.status = "pending";
+  state.reason = null;
+  state.dispatched_at = null;
+  state.completed_at = null;
+  state.timeout_min = rule.timeout_min;
+  state.tests = null;
+  state.failing_tests = [];
+  state.lint_pass = null;
+  state.files_changed = [];
+  state.blocked_by = [];
+  state.human_note = instruction;
+  state.task_type = "custom";
+
+  writeState(projectRoot, state);
+  return state;
+}
+
 // ─── Internal Helpers ────────────────────────────────────────────────────────
 
 function elapsedMinutes(isoTimestamp: string): number {

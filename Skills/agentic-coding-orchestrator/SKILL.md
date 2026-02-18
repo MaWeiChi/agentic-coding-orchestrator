@@ -273,6 +273,112 @@ This is more reliable than parsing HANDOFF.md because it's a flat key-value form
 that requires no YAML parsing. The post-hook can read it first, falling back to
 HANDOFF.md if not present. Recommended for Level 2 (fully automated) deployments.
 
+## Custom Task Dispatch (Ad-Hoc Passthrough)
+
+Not all tasks are User Stories. The orchestrator supports a **custom** step that
+forwards any arbitrary instruction to Claude Code with full project context — no
+micro-waterfall pipeline required.
+
+Pipeline: `custom → update-memory → done`
+
+### Usage
+
+```bash
+# CLI
+orchestrator start-custom ./project "Refactor auth module into separate package"
+orchestrator dispatch ./project   # prints prompt with instruction + project context
+
+# Programmatic
+import { startCustom, dispatch } from "@agentic-coding/orchestrator-core";
+startCustom(projectRoot, "Add rate limiting to all API endpoints");
+const result = dispatch(projectRoot);
+// result.prompt includes instruction + PROJECT_CONTEXT + MEMORY + SDD + Constitution
+```
+
+### Use Cases
+
+The custom step handles any task OpenClaw encounters that doesn't fit the Story pipeline:
+
+**Refactoring**
+- Extract module: "Extract authentication logic into a separate auth package"
+- Rename: "Rename all UserDTO references to UserResponse across the project"
+- Restructure: "Convert class components to functional components with hooks"
+- Split: "Split monolithic service.ts into domain-specific modules"
+
+**Code Review**
+- Security review: "Review src/api/ for SQL injection and XSS vulnerabilities"
+- PR review: "Review PR #42 changes and list potential issues"
+- Architecture review: "Evaluate whether the current module structure follows clean architecture"
+- Error handling audit: "Check all error handling paths in the payment flow"
+
+**Bug Fix (Hotfix)**
+- "Fix the race condition in WebSocket reconnection logic"
+- "Debug why /api/users returns 500 on empty query params"
+- "Fix memory leak in event listener cleanup on component unmount"
+- "Resolve deadlock in concurrent database writes"
+
+**DevOps / Infrastructure**
+- "Add GitHub Actions CI pipeline for lint + test + build"
+- "Create Dockerfile and docker-compose.yml for local development"
+- "Set up pre-commit hooks for linting and formatting"
+- "Configure Renovate/Dependabot for automated dependency updates"
+- "Add Terraform config for staging environment"
+
+**Documentation**
+- "Add JSDoc comments to all exported functions in src/api/"
+- "Update README with current API endpoints and usage examples"
+- "Generate OpenAPI spec from existing Express route handlers"
+- "Write ADR (Architecture Decision Record) for the database migration choice"
+
+**Testing**
+- "Add unit tests for utils/validation.ts (target 90% coverage)"
+- "Write integration tests for the checkout flow"
+- "Add snapshot tests for all React components in src/ui/"
+- "Set up E2E tests with Playwright for critical user paths"
+
+**Dependency / Migration**
+- "Upgrade React from v17 to v18, fix all breaking changes"
+- "Migrate from Express to Fastify, preserve all route behavior"
+- "Replace moment.js with date-fns across the project"
+- "Migrate database schema: add soft delete to all entities"
+
+**Performance**
+- "Profile and optimize the dashboard query (currently 3s response time)"
+- "Add Redis caching for /api/products endpoint"
+- "Implement virtual scrolling for the transaction list (10k+ rows)"
+- "Lazy-load all route components with React.lazy + Suspense"
+
+**Security**
+- "Add rate limiting to all authentication endpoints"
+- "Implement CSRF protection for all form submissions"
+- "Sanitize all user inputs against XSS in the search endpoint"
+- "Add Content-Security-Policy and security headers"
+- "Audit npm dependencies for known CVEs and upgrade affected packages"
+
+**Cleanup**
+- "Remove all unused imports and dead code across the project"
+- "Standardize error response format across all API endpoints"
+- "Replace all console.log with structured logger (winston/pino)"
+- "Fix all TypeScript strict mode errors"
+- "Normalize file naming convention to kebab-case"
+
+### How It Works
+
+1. `startCustom()` sets `task_type: "custom"`, `step: "custom"`, and stores the
+   instruction in `human_note`
+2. `dispatch()` picks up the custom step, builds a prompt that includes:
+   - The instruction (from `human_note`)
+   - Project context: `PROJECT_CONTEXT.md`, `PROJECT_MEMORY.md`, `docs/sdd.md`,
+     `docs/constitution.md`, `.ai/HANDOFF.md`
+   - Standard output rules (HANDOFF.md update, reason codes)
+3. After the executor exits, `applyHandoff()` parses results as usual
+4. On pass → advances to `update-memory` → `done`
+5. On fail → retries custom step (up to `max_attempts: 3`)
+
+The custom step uses the same three-file protocol, same HANDOFF format, same
+reason-based routing as Story steps. The only difference is: it skips the
+BDD → SDD → Contract → Review → Scaffold pipeline and goes straight to execution.
+
 ## Step Conversion Rules (Quick Reference)
 
 Step names use **kebab-case**, matching the TypeScript implementation in
@@ -289,6 +395,7 @@ Step names use **kebab-case**, matching the TypeScript implementation in
 | impl | BDD, SDD, contract, HANDOFF | source code | project-specific | 5 |
 | verify | BDD, Delta, SDD, contract, Constitution, HANDOFF | — (check only) | — | 2 |
 | update-memory | Memory, HANDOFF (+ test results in prompt) | PROJECT_MEMORY.md, .ai/history.md | — | 2 |
+| custom | Context, Memory, SDD, Constitution, HANDOFF | * (any) | — | 3 |
 
 Read `references/protocol.md` for the complete table with all fields and the full
 Multi-Executor collaboration specification.

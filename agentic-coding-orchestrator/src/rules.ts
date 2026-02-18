@@ -247,6 +247,95 @@ export const STEP_RULES: Record<Exclude<Step, "bootstrap" | "done">, StepRule> =
   },
 };
 
+  custom: {
+    display_name: "Custom Task",
+    next_on_pass: "update-memory",
+    on_fail: { default: "custom" },
+    max_attempts: 3,
+    timeout_min: 15,
+    requires_human: false,
+    claude_reads: [
+      "PROJECT_CONTEXT.md",
+      "PROJECT_MEMORY.md",
+      "docs/sdd.md",
+      "docs/constitution.md",
+      ".ai/HANDOFF.md",
+    ],
+    claude_writes: ["*"],
+    post_check: null,
+    step_instruction:
+      "Execute the custom task described in the Human Instruction section above. " +
+      "Follow the project's Constitution constraints. " +
+      "Only modify files relevant to the task — don't refactor unrelated code. " +
+      "If the task is unclear, fill reason with needs_clarification.",
+  },
+};
+
+// ─── Custom Task Use Cases ──────────────────────────────────────────────────
+//
+// The "custom" step is a generic passthrough that lets OpenClaw forward ANY
+// instruction to Claude Code with full project context. Common use cases:
+//
+// ── Refactoring ──
+//   "Extract authentication logic into a separate auth module"
+//   "Rename all UserDTO references to UserResponse"
+//   "Convert class components to functional components with hooks"
+//   "Split monolithic service.ts into domain-specific modules"
+//
+// ── Code Review ──
+//   "Review src/api/ for security vulnerabilities"
+//   "Review PR #42 changes and list potential issues"
+//   "Check all error handling paths in the payment flow"
+//   "Audit dependencies for known CVEs"
+//
+// ── Bug Fix (hotfix, not full story) ──
+//   "Fix the race condition in WebSocket reconnection"
+//   "Debug why /api/users returns 500 on empty query"
+//   "Fix memory leak in event listener cleanup"
+//
+// ── DevOps / Infrastructure ──
+//   "Add GitHub Actions CI pipeline for lint + test + build"
+//   "Create Dockerfile and docker-compose.yml for local dev"
+//   "Set up pre-commit hooks for linting and formatting"
+//   "Configure Renovate for automated dependency updates"
+//
+// ── Documentation ──
+//   "Add JSDoc comments to all exported functions in src/api/"
+//   "Update README with current API endpoints and examples"
+//   "Generate OpenAPI spec from existing route handlers"
+//   "Write architecture decision record for database choice"
+//
+// ── Testing ──
+//   "Add unit tests for utils/validation.ts (target 90% coverage)"
+//   "Write integration tests for the checkout flow"
+//   "Add snapshot tests for all React components in src/ui/"
+//   "Set up E2E tests with Playwright for critical user paths"
+//
+// ── Dependency / Migration ──
+//   "Upgrade React from v17 to v18, fix breaking changes"
+//   "Migrate from Express to Fastify"
+//   "Replace moment.js with date-fns"
+//   "Migrate database schema: add soft delete to all entities"
+//
+// ── Performance ──
+//   "Profile and optimize the dashboard query (currently 3s)"
+//   "Add Redis caching for /api/products endpoint"
+//   "Implement virtual scrolling for the transaction list"
+//   "Lazy-load all route components with React.lazy"
+//
+// ── Security ──
+//   "Add rate limiting to all authentication endpoints"
+//   "Implement CSRF protection for form submissions"
+//   "Sanitize all user inputs in the search endpoint"
+//   "Add Content-Security-Policy headers"
+//
+// ── Cleanup ──
+//   "Remove all unused imports and dead code"
+//   "Standardize error response format across all endpoints"
+//   "Replace console.log with structured logger"
+//   "Fix all TypeScript strict mode errors"
+//
+
 // ─── Bootstrap Rule (special: one-time, not in the micro-waterfall loop) ─────
 
 export const BOOTSTRAP_RULE: StepRule = {

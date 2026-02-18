@@ -1,5 +1,5 @@
 /**
- * Agentic Coding Protocol — OpenClaw Orchestrator Core
+ * Agentic Coding Protocol — Orchestrator Core
  *
  * Three modules, one pipeline:
  *   state.ts   → STATE.json types + I/O
@@ -13,6 +13,7 @@ export {
   type Step,
   type Status,
   type Reason,
+  type TaskType,
   type TestResult,
   createInitialState,
   readState,
@@ -55,4 +56,5 @@ export {
   approveReview,
   rejectReview,
   startStory,
+  startCustom,
 } from "./dispatch";
