@@ -432,20 +432,20 @@ When the user says something, OpenClaw should classify it into one of these cate
 
 ### Classification Rules for OpenClaw LLM
 
-**CRITICAL RULE: When the user explicitly says "use Claude Code" / "用 Claude Code" /
-"讓 Claude Code 做", OpenClaw MUST use the orchestrator flow. This is non-negotiable,
-regardless of whether the project has STATE.json or any framework files.**
-`startCustom()` and `startStory()` auto-initialize STATE.json if it doesn't exist.
+**CRITICAL RULE: When user mentions "Claude Code" / "CC" / "cc" / "用 CC" /
+"讓 CC 做" (case-insensitive), OpenClaw MUST use orchestrator flow. Non-negotiable,
+regardless of project state.**
+`startCustom()` and `startStory()` auto-init STATE.json if missing.
 
 ```
-IF user EXPLICITLY mentions "Claude Code" or "用 Claude Code"
+IF user EXPLICITLY mentions "Claude Code" or "CC" (case-insensitive)
    → ALWAYS use orchestrator flow:
      1. startCustom(root, instruction) or startStory(root, id)
-        (auto-creates .ai/STATE.json if missing — infers project name)
-     2. dispatch(root) → get prompt
-     3. Pipe prompt to Claude Code
+        (auto-creates .ai/STATE.json if missing)
+     2. dispatch(root) → get prompt + fw_lv
+     3. Pipe prompt to CC
      4. applyHandoff(root) → update STATE
-   → This applies even if the project has ZERO framework files
+   → Applies even with ZERO framework files
 
 IF user asks a QUESTION about project status, progress, tests, or history
    → READ files (STATE.json, PROJECT_MEMORY.md, .ai/history.md)
@@ -522,18 +522,17 @@ projects). When the user says "open project A", OpenClaw:
 When switching projects, OpenClaw does NOT need to dispatch anything. It just
 reads the persisted state files.
 
-### Framework Level in DispatchResult
+### `fw_lv` in DispatchResult
 
-When `dispatch()` returns `type: "dispatched"`, it includes `framework_level`:
+When `dispatch()` returns `type: "dispatched"`, it includes `fw_lv` (framework level):
 
-| `framework_level` | Meaning | OpenClaw should tell the user |
-|-------------------|---------|-------------------------------|
-| `0` | No framework files — Claude Code works solo, reads source directly | "Claude Code 會直接分析專案 code（無 framework context）" |
-| `1` | Partial adoption — some framework docs exist | "Claude Code 有部分專案文件可以參考" |
-| `2` | Full framework — complete context available | "Claude Code 有完整的專案 context" |
+| `fw_lv` | Meaning | OpenClaw tells user |
+|---------|---------|---------------------|
+| `0` | No framework — CC works solo | "CC 會直接分析 code（無 framework context）" |
+| `1` | Partial — some docs exist | "CC 有部分專案文件可參考" |
+| `2` | Full framework | "CC 有完整專案 context" |
 
-This lets OpenClaw set the right expectation: Level 0 tasks may take longer and produce
-less precise results since Claude Code has no prior project knowledge to work from.
+Level 0 tasks may take longer since CC has no prior project knowledge.
 
 ### What OpenClaw Tells the User
 
@@ -542,7 +541,7 @@ language. Here's how to translate orchestrator results:
 
 | DispatchResult.type | What to tell the user |
 |--------------------|----------------------|
-| `dispatched` | "正在執行 {step} (第 {attempt} 次)..." / "Running {step} (attempt {attempt})..." — also check `framework_level`: 0 = Claude Code solo (no framework context), 1 = partial context, 2 = full context |
+| `dispatched` | "正在執行 {step} (第 {attempt} 次)..." — check `fw_lv`: 0 = CC solo, 1 = partial ctx, 2 = full ctx |
 | `done` | "Story {story} 完成了！" / "Story {story} is complete!" |
 | `needs_human` | "需要你 review：{message}" / "Needs your review: {message}" |
 | `blocked` | "卡住了：{reason}" / "Blocked: {reason}" |

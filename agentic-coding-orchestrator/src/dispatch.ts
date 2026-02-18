@@ -34,7 +34,7 @@ import {
 // ─── Dispatch Result Types ───────────────────────────────────────────────────
 
 export type DispatchResult =
-  | { type: "dispatched"; step: Step; attempt: number; prompt: string; framework_level: 0 | 1 | 2 }
+  | { type: "dispatched"; step: Step; attempt: number; prompt: string; fw_lv: 0 | 1 | 2 }
   | { type: "blocked"; step: Step; reason: string }
   | { type: "needs_human"; step: Step; message: string }
   | { type: "done"; story: string; summary: string }
@@ -183,7 +183,7 @@ export function dispatch(projectRoot: string): DispatchResult {
     step: running.step,
     attempt: running.attempt,
     prompt,
-    framework_level: framework.level,
+    fw_lv: framework.level,
   };
 }
 
