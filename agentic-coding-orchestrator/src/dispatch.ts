@@ -638,23 +638,58 @@ export function detectFramework(projectRoot: string): FrameworkDetection {
 
 /**
  * Get comprehensive project status for OpenClaw to summarize to the user.
- * Reads STATE.json + first 20 lines of PROJECT_MEMORY.md for NEXT items.
+ * Works for ANY project — with or without the Agentic Coding Framework.
+ *
+ * - Framework project (has STATE.json): returns full state + memory summary
+ * - Non-framework project: returns framework detection + whatever files exist
  */
 export function queryProjectStatus(projectRoot: string): ProjectStatus {
-  const state = readState(projectRoot);
   const framework = detectFramework(projectRoot);
 
-  // Read MEMORY summary (first 30 lines, extract NEXT section)
+  // Read MEMORY summary if it exists
   let memory_summary: string | null = null;
   const memoryPath = join(projectRoot, "PROJECT_MEMORY.md");
   if (existsSync(memoryPath)) {
     const content = readFileSync(memoryPath, "utf-8");
-    // Extract NEXT section
     const nextMatch = content.match(/## NEXT[\s\S]*?(?=## |$)/);
     if (nextMatch) {
-      memory_summary = nextMatch[0].trim().slice(0, 500); // cap at 500 chars
+      memory_summary = nextMatch[0].trim().slice(0, 500);
     }
   }
+
+  // If no STATE.json, return a minimal status with framework detection
+  if (!framework.has_state) {
+    // Try to infer project name from package.json or directory name
+    let project = "(not initialized)";
+    const pkgPath = join(projectRoot, "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+        project = pkg.name ?? project;
+      } catch { /* ignore */ }
+    }
+
+    return {
+      project,
+      task_type: "unknown",
+      story: null,
+      step: "none",
+      status: "not_initialized",
+      attempt: 0,
+      max_attempts: 0,
+      reason: null,
+      tests: null,
+      lint_pass: null,
+      files_changed: [],
+      blocked_by: [],
+      human_note: null,
+      memory_summary,
+      has_framework: framework,
+    };
+  }
+
+  // Framework project: read full state
+  const state = readState(projectRoot);
 
   return {
     project: state.project,
@@ -675,15 +710,47 @@ export function queryProjectStatus(projectRoot: string): ProjectStatus {
   };
 }
 
+/** Project entry returned by listProjects */
+export interface ProjectEntry {
+  /** Project name (from STATE.json, package.json, or directory name) */
+  name: string;
+  /** Directory name relative to workspace root */
+  dir: string;
+  /** Current step ("none" if not using framework) */
+  step: string;
+  /** Current status ("not_initialized" if not using framework) */
+  status: string;
+  /** Current story ID */
+  story: string | null;
+  /** Whether this project uses the Agentic Coding Framework */
+  has_framework: boolean;
+}
+
 /**
- * Scan a workspace directory for all projects that have .ai/STATE.json.
+ * Scan a workspace directory for all projects — both framework and non-framework.
  * OpenClaw calls this when the user asks "list my projects" or "switch project".
+ *
+ * A directory is considered a "project" if it contains any of:
+ * - .ai/STATE.json (framework project)
+ * - package.json (Node.js project)
+ * - go.mod (Go project)
+ * - Cargo.toml (Rust project)
+ * - pyproject.toml or setup.py (Python project)
+ * - .git/ (any git repo)
  */
-export function listProjects(
-  workspaceRoot: string
-): Array<{ name: string; dir: string; step: string; status: string; story: string | null }> {
+export function listProjects(workspaceRoot: string): ProjectEntry[] {
   const { readdirSync, statSync } = require("fs") as typeof import("fs");
-  const results: Array<{ name: string; dir: string; step: string; status: string; story: string | null }> = [];
+  const results: ProjectEntry[] = [];
+
+  const PROJECT_MARKERS = [
+    ".ai/STATE.json",
+    "package.json",
+    "go.mod",
+    "Cargo.toml",
+    "pyproject.toml",
+    "setup.py",
+    ".git",
+  ];
 
   let entries: string[];
   try {
@@ -693,11 +760,24 @@ export function listProjects(
   }
 
   for (const entry of entries) {
+    // Skip hidden directories (except .git check is internal)
+    if (entry.startsWith(".")) continue;
+
     const dir = join(workspaceRoot, entry);
     try {
       if (!statSync(dir).isDirectory()) continue;
+
+      // Check if this directory is a project
+      const isProject = PROJECT_MARKERS.some((marker) =>
+        existsSync(join(dir, marker))
+      );
+      if (!isProject) continue;
+
       const stateFile = join(dir, ".ai", "STATE.json");
-      if (existsSync(stateFile)) {
+      const hasFramework = existsSync(stateFile);
+
+      if (hasFramework) {
+        // Framework project: read state
         const state = JSON.parse(readFileSync(stateFile, "utf-8")) as State;
         results.push({
           name: state.project,
@@ -705,6 +785,25 @@ export function listProjects(
           step: state.step,
           status: state.status,
           story: state.story,
+          has_framework: true,
+        });
+      } else {
+        // Non-framework project: infer name from package.json or dir name
+        let name = entry;
+        const pkgPath = join(dir, "package.json");
+        if (existsSync(pkgPath)) {
+          try {
+            const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+            name = pkg.name ?? entry;
+          } catch { /* ignore */ }
+        }
+        results.push({
+          name,
+          dir: entry,
+          step: "none",
+          status: "not_initialized",
+          story: null,
+          has_framework: false,
         });
       }
     } catch {

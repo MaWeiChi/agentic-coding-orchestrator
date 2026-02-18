@@ -60,6 +60,7 @@ export {
   // Query functions (for OpenClaw LLM — zero executor cost)
   type ProjectStatus,
   type FrameworkDetection,
+  type ProjectEntry,
   detectFramework,
   queryProjectStatus,
   listProjects,

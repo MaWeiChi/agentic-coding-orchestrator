@@ -417,7 +417,7 @@ When the user says something, OpenClaw should classify it into one of these cate
 |-------------|----------|-------------------|------|
 | "開啟專案 A" / "Open project A" | **Query** | `readState(projectRoot)` + read `PROJECT_MEMORY.md` → summarize current status to user | Free |
 | "繼續專案 B" / "Continue project B" | **Dispatch** | `dispatch(projectRoot)` → pipe prompt to Claude Code → `applyHandoff()` | Claude Code tokens |
-| "這專案有沒有用 framework" / "Is this project using the framework?" | **Detect** | Check if `.ai/STATE.json`, `PROJECT_CONTEXT.md`, `PROJECT_MEMORY.md` exist | Free |
+| "這專案有沒有用 framework" / "Is this project using the framework?" | **Detect** | `detectFramework(projectRoot)` → Level 0/1/2 | Free |
 | "測試狀況如何" / "How are the tests?" | **Query** | `readState(projectRoot)` → read `state.tests`, `state.failing_tests`, `state.lint_pass` | Free |
 | "還有哪些可以做" / "What's left to do?" | **Query** | Read `PROJECT_MEMORY.md` → extract NEXT section items | Free |
 | "幫我 refactor auth module" / "Refactor the auth module" | **Custom Dispatch** | `startCustom(projectRoot, instruction)` → `dispatch()` → Claude Code | Claude Code tokens |
@@ -427,7 +427,7 @@ When the user says something, OpenClaw should classify it into one of these cate
 | "reject，需要改 X" / "Reject, need to change X" | **Action** | `rejectReview(projectRoot, reason, note)` | Free |
 | "開新 story US-007" / "Start story US-007" | **Action** | `startStory(projectRoot, "US-007")` | Free |
 | "把 moment 換成 date-fns" / "Replace moment with date-fns" | **Custom Dispatch** | `startCustom(projectRoot, "Replace moment.js with date-fns")` → `dispatch()` | Claude Code tokens |
-| "列出所有專案" / "List all projects" | **Query** | Scan workspace for directories containing `.ai/STATE.json` | Free |
+| "列出所有專案" / "List all projects" | **Query** | `listProjects(workspaceRoot)` → lists ALL projects (framework + non-framework) | Free |
 | "專案 A 跟 B 的進度比較" / "Compare progress of A and B" | **Query** | `readState()` for both projects → compare step/status | Free |
 
 ### Classification Rules for OpenClaw LLM
@@ -454,15 +454,46 @@ IF user asks about framework adoption
    → Report adoption level (0/1/2)
 ```
 
+### Non-Framework Projects
+
+Not every project uses the Agentic Coding Framework. All query functions handle
+this gracefully:
+
+- `queryProjectStatus()` → returns `status: "not_initialized"`, `step: "none"`,
+  plus `has_framework.level: 0`. Infers project name from `package.json` if available.
+- `detectFramework()` → returns all flags as `false`, `level: 0`
+- `listProjects()` → detects ANY project directory (package.json, go.mod, Cargo.toml,
+  pyproject.toml, .git, etc.) and marks `has_framework: false` for non-framework ones
+
+When OpenClaw encounters a non-framework project, it can:
+1. **Report the state**: "This project doesn't use the Agentic Coding Framework yet"
+2. **Offer to adopt**: `initState(projectRoot, projectName)` to initialize STATE.json
+3. **Still dispatch custom tasks**: `startCustom()` works after `initState()`
+4. **Use Claude Code directly**: If the user just wants a quick task done, OpenClaw
+   can skip the orchestrator and call Claude Code directly with the instruction
+
+```
+User: 打開 legacy-api 專案
+OpenClaw: [queryProjectStatus(root)]
+OpenClaw: legacy-api 目前沒有使用 Agentic Coding Framework（偵測到 package.json 和 .git）。
+         要幫你初始化 framework 嗎？或是你有什麼想讓我做的？
+
+User: 先幫我做 code review
+OpenClaw: [initState(root, "legacy-api")]
+         [startCustom(root, "Review the codebase for code quality and potential issues")]
+         [dispatch() → Claude Code → applyHandoff()]
+OpenClaw: Review 完成了，發現 8 個問題...
+```
+
 ### Multi-Project Management
 
 OpenClaw should maintain a workspace registry (a directory containing multiple
 projects). When the user says "open project A", OpenClaw:
 
-1. Scans the workspace for directories with `.ai/STATE.json`
-2. Matches by project name (from `state.project` field) or directory name
+1. Scans the workspace with `listProjects(workspaceRoot)` — finds ALL projects
+2. Matches by project name or directory name (supports both framework and non-framework)
 3. Sets the active project root
-4. Reads STATE + MEMORY and reports status to the user
+4. Calls `queryProjectStatus(projectRoot)` and reports status to the user
 
 When switching projects, OpenClaw does NOT need to dispatch anything. It just
 reads the persisted state files.
@@ -513,17 +544,19 @@ OpenClaw: 最後一次測試：pass=47, fail=0, skip=3。lint 也通過了。
 
 Functions OpenClaw needs to know:
 
-| Function | Purpose | When to Use |
-|----------|---------|------------|
-| `readState(root)` | Read current STATE.json | Any status query |
-| `initState(root, name)` | Initialize new project | "Create/init project" |
-| `startStory(root, id)` | Begin User Story pipeline | "Start US-007" |
-| `startCustom(root, instruction)` | Begin ad-hoc task | Any non-Story instruction |
-| `dispatch(root)` | Get next prompt / advance | After start, or "continue" |
-| `applyHandoff(root)` | Parse HANDOFF after executor | After Claude Code exits |
-| `runPostCheck(root, execSync)` | Run post_check command | After executor, before handoff |
-| `approveReview(root, note?)` | Approve review step | "Approve" / "LGTM" |
-| `rejectReview(root, reason, note?)` | Reject review step | "Reject because..." |
+| Function | Purpose | When to Use | Works without framework? |
+|----------|---------|------------|------------------------|
+| `queryProjectStatus(root)` | Full status summary | "How's the project?" | ✅ Yes (returns `not_initialized`) |
+| `detectFramework(root)` | Check framework adoption | "Is this using framework?" | ✅ Yes (returns Level 0) |
+| `listProjects(workspace)` | List all projects | "What projects do I have?" | ✅ Yes (detects any project) |
+| `readState(root)` | Read raw STATE.json | Detailed status query | ❌ Throws if no STATE.json |
+| `initState(root, name)` | Initialize new project | "Create/init project" | ✅ Creates STATE.json |
+| `startStory(root, id)` | Begin User Story pipeline | "Start US-007" | ❌ Needs STATE.json |
+| `startCustom(root, instruction)` | Begin ad-hoc task | Any non-Story instruction | ❌ Needs STATE.json |
+| `dispatch(root)` | Get next prompt / advance | After start, or "continue" | ❌ Needs STATE.json |
+| `applyHandoff(root)` | Parse HANDOFF after executor | After Claude Code exits | ❌ Needs STATE.json |
+| `approveReview(root, note?)` | Approve review step | "Approve" / "LGTM" | ❌ Needs STATE.json |
+| `rejectReview(root, reason, note?)` | Reject review step | "Reject because..." | ❌ Needs STATE.json |
 
 Files OpenClaw can read directly (no function needed):
 
