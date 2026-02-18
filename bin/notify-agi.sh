@@ -98,7 +98,25 @@ if [ -n "$CWD" ] && [ -f "$CWD/.ai/STATE.json" ] && [ -f "$CWD/.ai/HANDOFF.md" ]
     fi
 fi
 
-# ---- Write pending-wake (for AGI polling) ----
+# ---- Notify: push message to user (if configured) ----
+CHANNEL=$(jq -r '.notify_channel // ""' "$META_FILE" 2>/dev/null || echo "")
+NOTIFY_TARGET=$(jq -r '.notify_target // ""' "$META_FILE" 2>/dev/null || echo "")
+OPENCLAW_BIN="${OPENCLAW_BIN:-openclaw}"
+
+if [ -n "$CHANNEL" ] && [ -n "$NOTIFY_TARGET" ] && command -v "$OPENCLAW_BIN" &>/dev/null; then
+    SUMMARY=$(echo "$OUTPUT" | tail -c 1000 | tr '\n' ' ')
+    MSG="CC task done: ${TASK_NAME}
+${SUMMARY:0:800}"
+
+    "$OPENCLAW_BIN" message send \
+        --channel "$CHANNEL" \
+        --target "$NOTIFY_TARGET" \
+        --message "$MSG" >> "$LOG" 2>&1 && \
+        log "Sent $CHANNEL message to $NOTIFY_TARGET" || \
+        log "$CHANNEL send failed"
+fi
+
+# ---- Write pending-wake (fallback for AGI polling) ----
 jq -n \
     --arg task "$TASK_NAME" \
     --arg group "$GROUP" \

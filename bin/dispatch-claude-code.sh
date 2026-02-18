@@ -8,6 +8,8 @@
 #   -p, --prompt TEXT        Task prompt (required, or use --from-orchestrator)
 #   -n, --name NAME          Task name (for tracking)
 #   -g, --group ID           Chat group ID for result delivery
+#   -c, --channel CHANNEL    Notify channel: whatsapp, telegram, etc.
+#   --notify-target TARGET   Notify target (phone/group ID)
 #   -w, --workdir DIR        Working directory for Claude Code
 #   --from-orchestrator ROOT Use orchestrator dispatch() to generate prompt
 #   --permission-mode MODE   Claude Code permission mode
@@ -30,6 +32,8 @@ TASK_OUTPUT="${RESULT_DIR}/task-output.txt"
 PROMPT=""
 TASK_NAME="adhoc-$(date +%s)"
 GROUP=""
+CHANNEL=""
+NOTIFY_TARGET=""
 WORKDIR="."
 FROM_ORCHESTRATOR=""
 PERMISSION_MODE=""
@@ -41,6 +45,8 @@ while [[ $# -gt 0 ]]; do
         -p|--prompt) PROMPT="$2"; shift 2;;
         -n|--name) TASK_NAME="$2"; shift 2;;
         -g|--group) GROUP="$2"; shift 2;;
+        -c|--channel) CHANNEL="$2"; shift 2;;
+        --notify-target) NOTIFY_TARGET="$2"; shift 2;;
         -w|--workdir) WORKDIR="$2"; shift 2;;
         --from-orchestrator) FROM_ORCHESTRATOR="$2"; shift 2;;
         --permission-mode) PERMISSION_MODE="$2"; shift 2;;
@@ -71,6 +77,8 @@ cat > "$META_FILE" << EOF
 {
   "task_name": "${TASK_NAME}",
   "group": "${GROUP}",
+  "notify_channel": "${CHANNEL}",
+  "notify_target": "${NOTIFY_TARGET}",
   "workdir": "$(cd "$WORKDIR" && pwd)",
   "started_at": "$(date -Iseconds)",
   "status": "running"
