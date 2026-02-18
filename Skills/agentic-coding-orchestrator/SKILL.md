@@ -468,14 +468,20 @@ When the user says something, OpenClaw should classify it into one of these cate
 regardless of project state.**
 `startCustom()` and `startStory()` auto-init STATE.json if missing.
 
+**AGENT TEAMS RULE: When user mentions "agent-teams" / "agents" / "平行" / "多 agent",
+set `agentTeams: true`. CC will spawn sub-agents internally within the same session —
+no extra processes needed.**
+
 ```
-IF user EXPLICITLY mentions "Claude Code" or "CC" (case-insensitive)
+IF user EXPLICITLY mentions "CC" (case-insensitive)
    → ALWAYS use orchestrator flow:
-     1. startCustom(root, instruction) or startStory(root, id)
+     1. Detect agent-teams: "agent-teams" / "agents" / "平行" / "多 agent" → agentTeams = true
+     2. startCustom(root, instruction, { agentTeams })
+        or startStory(root, id, { agentTeams })
         (auto-creates .ai/STATE.json if missing)
-     2. dispatch(root) → get prompt + fw_lv
-     3. Pipe prompt to CC
-     4. applyHandoff(root) → update STATE
+     3. dispatch(root) → get prompt + fw_lv
+     4. Pipe prompt to CC (CC spawns sub-agents internally if agentTeams = true)
+     5. applyHandoff(root) → update STATE
    → Applies even with ZERO framework files
 
 IF user asks a QUESTION about project status, progress, tests, or history

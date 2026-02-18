@@ -243,6 +243,18 @@ export function buildPrompt(state: State, rule: StepRule): string {
     lines.push("");
   }
 
+  // Agent-teams
+  if (state.agent_teams) {
+    lines.push("=== Agent Teams ===");
+    lines.push(
+      "You may spawn sub-agents using Claude Code's agent-teams feature to parallelize this work. " +
+      "Assign sub-agents by role (e.g. backend, frontend, test) with scoped context. " +
+      "Each sub-agent should produce its own HANDOFF.md or result summary for you to merge."
+    );
+    lines.push("===================");
+    lines.push("");
+  }
+
   // Step instruction
   lines.push(rule.step_instruction);
   lines.push("");
@@ -595,7 +607,11 @@ function ensureState(projectRoot: string): State {
  * Begin a new User Story. Resets state to bdd step with attempt 1.
  * Auto-initializes STATE.json if the project hasn't adopted the framework yet.
  */
-export function startStory(projectRoot: string, storyId: string): State {
+export function startStory(
+  projectRoot: string,
+  storyId: string,
+  options: { agentTeams?: boolean } = {}
+): State {
   const state = ensureState(projectRoot);
   const rule = getRule("bdd");
 
@@ -614,6 +630,7 @@ export function startStory(projectRoot: string, storyId: string): State {
   state.files_changed = [];
   state.blocked_by = [];
   state.human_note = null;
+  state.agent_teams = options.agentTeams ?? false;
 
   writeState(projectRoot, state);
   return state;
@@ -879,12 +896,12 @@ export function listProjects(workspaceRoot: string): ProjectEntry[] {
 export function startCustom(
   projectRoot: string,
   instruction: string,
-  label?: string
+  options: { label?: string; agentTeams?: boolean } = {}
 ): State {
   const state = ensureState(projectRoot);
   const rule = getRule("custom");
 
-  state.story = label ?? `CUSTOM-${Date.now()}`;
+  state.story = options.label ?? `CUSTOM-${Date.now()}`;
   state.step = "custom";
   state.attempt = 1;
   state.max_attempts = rule.max_attempts;
@@ -900,6 +917,7 @@ export function startCustom(
   state.blocked_by = [];
   state.human_note = instruction;
   state.task_type = "custom";
+  state.agent_teams = options.agentTeams ?? false;
 
   writeState(projectRoot, state);
   return state;

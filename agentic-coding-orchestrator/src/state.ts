@@ -97,6 +97,9 @@ export interface State {
 
   /** Task type: "story" for micro-waterfall, "custom" for ad-hoc tasks */
   task_type: TaskType;
+
+  /** Whether CC is allowed to spawn agent-teams for this task */
+  agent_teams: boolean;
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
@@ -121,6 +124,7 @@ export function createInitialState(project: string): State {
     blocked_by: [],
     human_note: null,
     task_type: "story",
+    agent_teams: false,
   };
 }
 
