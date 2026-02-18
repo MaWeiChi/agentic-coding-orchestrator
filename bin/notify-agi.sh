@@ -35,10 +35,23 @@ EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // "unknown"' 2>/dev/null || ech
 
 log "session=$SESSION_ID cwd=$CWD event=$EVENT"
 
-# ---- Dedup: skip if already processed within 30s ----
+# ---- Dedup 1: session-ID lock (one send per CC session) ----
+if [ -n "$SESSION_ID" ] && [ "$SESSION_ID" != "unknown" ]; then
+    SESSION_LOCK="${RESULT_DIR}/.session-${SESSION_ID}.lock"
+    if [ -f "$SESSION_LOCK" ]; then
+        log "Already processed session $SESSION_ID, skip"
+        exit 0
+    fi
+    touch "$SESSION_LOCK"
+    # Clean up session locks older than 1 hour
+    find "$RESULT_DIR" -name '.session-*.lock' -mmin +60 -delete 2>/dev/null || true
+fi
+
+# ---- Dedup 2: time-based lock (30s cooldown, macOS + Linux compatible) ----
 LOCK_FILE="${RESULT_DIR}/.hook-lock"
 if [ -f "$LOCK_FILE" ]; then
-    LOCK_TIME=$(stat -c %Y "$LOCK_FILE" 2>/dev/null || echo 0)
+    # macOS: stat -f %m  |  Linux: stat -c %Y
+    LOCK_TIME=$(stat -f %m "$LOCK_FILE" 2>/dev/null || stat -c %Y "$LOCK_FILE" 2>/dev/null || echo 0)
     NOW=$(date +%s)
     AGE=$(( NOW - LOCK_TIME ))
     if [ "$AGE" -lt 30 ]; then
