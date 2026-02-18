@@ -12,6 +12,37 @@ description: >
 
 # Agentic Coding Framework — Orchestrator Skill
 
+## Installation
+
+```bash
+# npm
+npm install @agentic-coding/orchestrator-core
+
+# CLI (global)
+npm install -g @agentic-coding/orchestrator-core
+orchestrator status ./my-project
+
+# Programmatic
+import { dispatch, startCustom, startStory } from "@agentic-coding/orchestrator-core";
+```
+
+### CC Hooks Setup
+
+Copy the hook config to your Claude Code settings:
+
+```bash
+# 1. Install hooks
+cp node_modules/@agentic-coding/orchestrator-core/../../hooks/claude-settings.json ~/.claude/settings.json
+# Or merge manually into existing settings.json
+
+# 2. Copy shell scripts
+cp node_modules/@agentic-coding/orchestrator-core/../../bin/dispatch-claude-code.sh ~/.claude/hooks/
+cp node_modules/@agentic-coding/orchestrator-core/../../bin/notify-agi.sh ~/.claude/hooks/
+chmod +x ~/.claude/hooks/*.sh
+```
+
+## Overview
+
 You are configuring or operating an orchestrator that drives executor
 agents (such as Claude Code) through the Agentic Coding Framework's micro-waterfall
 lifecycle. The orchestrator's design goal is **zero reasoning, zero LLM tokens** — all

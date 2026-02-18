@@ -1,18 +1,40 @@
 {
   "name": "@agentic-coding/orchestrator-core",
   "version": "0.1.0",
-  "description": "Orchestrator core for the Agentic Coding Protocol — state machine, rules table, dispatch logic",
+  "description": "Zero-token orchestrator for the Agentic Coding Protocol — state machine, rules table, dispatch logic, CC integration",
   "type": "commonjs",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "orchestrator": "dist/cli.js"
+  },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "files": ["dist"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "agentic-coding",
+    "orchestrator",
+    "claude-code",
+    "ai-coding",
+    "state-machine",
+    "micro-waterfall"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MaWeiChi/agentic-coding-orchestrator.git",
+    "directory": "agentic-coding-orchestrator"
+  },
+  "author": "MaWeiChi",
   "license": "MIT",
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
   }

@@ -245,7 +245,6 @@ export const STEP_RULES: Record<Exclude<Step, "bootstrap" | "done">, StepRule> =
       "Overwrite .ai/HANDOFF.md with latest session summary. " +
       "Record current git commit hash.",
   },
-};
 
   custom: {
     display_name: "Custom Task",

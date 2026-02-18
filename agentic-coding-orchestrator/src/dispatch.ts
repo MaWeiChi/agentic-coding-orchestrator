@@ -18,6 +18,7 @@ import {
   type Reason,
   readState,
   writeState,
+  initState,
   isTimedOut,
   isMaxedOut,
   markRunning,
