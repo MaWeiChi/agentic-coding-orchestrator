@@ -34,7 +34,7 @@ import {
 // ─── Dispatch Result Types ───────────────────────────────────────────────────
 
 export type DispatchResult =
-  | { type: "dispatched"; step: Step; attempt: number; prompt: string }
+  | { type: "dispatched"; step: Step; attempt: number; prompt: string; framework_level: 0 | 1 | 2 }
   | { type: "blocked"; step: Step; reason: string }
   | { type: "needs_human"; step: Step; message: string }
   | { type: "done"; story: string; summary: string }
@@ -175,11 +175,15 @@ export function dispatch(projectRoot: string): DispatchResult {
   const running = markRunning(state);
   writeState(projectRoot, running);
 
+  // Detect framework adoption level so caller knows the context richness
+  const framework = detectFramework(projectRoot);
+
   return {
     type: "dispatched",
     step: running.step,
     attempt: running.attempt,
     prompt,
+    framework_level: framework.level,
   };
 }
 

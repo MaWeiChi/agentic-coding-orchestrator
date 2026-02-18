@@ -522,6 +522,19 @@ projects). When the user says "open project A", OpenClaw:
 When switching projects, OpenClaw does NOT need to dispatch anything. It just
 reads the persisted state files.
 
+### Framework Level in DispatchResult
+
+When `dispatch()` returns `type: "dispatched"`, it includes `framework_level`:
+
+| `framework_level` | Meaning | OpenClaw should tell the user |
+|-------------------|---------|-------------------------------|
+| `0` | No framework files — Claude Code works solo, reads source directly | "Claude Code 會直接分析專案 code（無 framework context）" |
+| `1` | Partial adoption — some framework docs exist | "Claude Code 有部分專案文件可以參考" |
+| `2` | Full framework — complete context available | "Claude Code 有完整的專案 context" |
+
+This lets OpenClaw set the right expectation: Level 0 tasks may take longer and produce
+less precise results since Claude Code has no prior project knowledge to work from.
+
 ### What OpenClaw Tells the User
 
 After dispatching Claude Code, OpenClaw should report back in human-friendly
@@ -529,7 +542,7 @@ language. Here's how to translate orchestrator results:
 
 | DispatchResult.type | What to tell the user |
 |--------------------|----------------------|
-| `dispatched` | "正在執行 {step} (第 {attempt} 次)..." / "Running {step} (attempt {attempt})..." |
+| `dispatched` | "正在執行 {step} (第 {attempt} 次)..." / "Running {step} (attempt {attempt})..." — also check `framework_level`: 0 = Claude Code solo (no framework context), 1 = partial context, 2 = full context |
 | `done` | "Story {story} 完成了！" / "Story {story} is complete!" |
 | `needs_human` | "需要你 review：{message}" / "Needs your review: {message}" |
 | `blocked` | "卡住了：{reason}" / "Blocked: {reason}" |
