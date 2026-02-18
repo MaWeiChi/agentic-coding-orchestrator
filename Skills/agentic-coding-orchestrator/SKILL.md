@@ -16,14 +16,14 @@ description: >
 
 ```bash
 # npm
-npm install @agentic-coding/orchestrator-core
+npm install @agentic-coding-framework/orchestrator-core
 
 # CLI (global)
-npm install -g @agentic-coding/orchestrator-core
+npm install -g @agentic-coding-framework/orchestrator-core
 orchestrator status ./my-project
 
 # Programmatic
-import { dispatch, startCustom, startStory } from "@agentic-coding/orchestrator-core";
+import { dispatch, startCustom, startStory } from "@agentic-coding-framework/orchestrator-core";
 ```
 
 ### CC Hooks Setup
@@ -32,12 +32,12 @@ Copy the hook config to your Claude Code settings:
 
 ```bash
 # 1. Install hooks
-cp node_modules/@agentic-coding/orchestrator-core/../../hooks/claude-settings.json ~/.claude/settings.json
+cp node_modules/@agentic-coding-framework/orchestrator-core/../../hooks/claude-settings.json ~/.claude/settings.json
 # Or merge manually into existing settings.json
 
 # 2. Copy shell scripts
-cp node_modules/@agentic-coding/orchestrator-core/../../bin/dispatch-claude-code.sh ~/.claude/hooks/
-cp node_modules/@agentic-coding/orchestrator-core/../../bin/notify-agi.sh ~/.claude/hooks/
+cp node_modules/@agentic-coding-framework/orchestrator-core/../../bin/dispatch-claude-code.sh ~/.claude/hooks/
+cp node_modules/@agentic-coding-framework/orchestrator-core/../../bin/notify-agi.sh ~/.claude/hooks/
 chmod +x ~/.claude/hooks/*.sh
 ```
 
@@ -320,7 +320,7 @@ orchestrator start-custom ./project "Refactor auth module into separate package"
 orchestrator dispatch ./project   # prints prompt with instruction + project context
 
 # Programmatic
-import { startCustom, dispatch } from "@agentic-coding/orchestrator-core";
+import { startCustom, dispatch } from "@agentic-coding-framework/orchestrator-core";
 startCustom(projectRoot, "Add rate limiting to all API endpoints");
 const result = dispatch(projectRoot);
 // result.prompt includes instruction + PROJECT_CONTEXT + MEMORY + SDD + Constitution

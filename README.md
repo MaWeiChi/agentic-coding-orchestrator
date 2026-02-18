@@ -5,13 +5,13 @@ Zero-token orchestrator for the [Agentic Coding Framework](https://github.com/Ma
 ## Installation
 
 ```bash
-npm install @agentic-coding/orchestrator-core
+npm install @agentic-coding-framework/orchestrator-core
 ```
 
 Global CLI:
 
 ```bash
-npm install -g @agentic-coding/orchestrator-core
+npm install -g @agentic-coding-framework/orchestrator-core
 orchestrator status ./my-project
 ```
 
@@ -21,7 +21,7 @@ orchestrator status ./my-project
 import {
   dispatch, startStory, startCustom, applyHandoff,
   queryProjectStatus, detectFramework, listProjects,
-} from "@agentic-coding/orchestrator-core";
+} from "@agentic-coding-framework/orchestrator-core";
 
 // Start a story (micro-waterfall: bdd → sdd → contract → review → scaffold → impl → verify → done)
 startStory(projectRoot, "US-001");
