@@ -17,7 +17,7 @@ import { resolve } from "path";
 import { execSync } from "child_process";
 
 import { initState, readState } from "./state";
-import { dispatch, applyHandoff, runPostCheck, approveReview, rejectReview, startStory, startCustom } from "./dispatch";
+import { dispatch, applyHandoff, runPostCheck, approveReview, rejectReview, startStory, startCustom, queryProjectStatus, detectFramework, listProjects } from "./dispatch";
 import type { Reason } from "./state";
 
 const [, , command, ...args] = process.argv;
@@ -35,6 +35,9 @@ Commands:
   approve <project-root> [note]          Approve review step
   reject <project-root> <reason> [note]  Reject review step
   status <project-root>                  Print current STATE.json
+  query <project-root>                   Project status summary (for OpenClaw)
+  detect <project-root>                  Check if project uses the framework
+  list-projects <workspace-root>         List all projects in workspace
 `);
   process.exit(1);
 }
@@ -168,6 +171,33 @@ try {
       const projectRoot = resolveRoot(args[0]);
       const state = readState(projectRoot);
       console.log(JSON.stringify(state, null, 2));
+      break;
+    }
+
+    case "query": {
+      const projectRoot = resolveRoot(args[0]);
+      const status = queryProjectStatus(projectRoot);
+      console.log(JSON.stringify(status, null, 2));
+      break;
+    }
+
+    case "detect": {
+      const projectRoot = resolveRoot(args[0]);
+      const result = detectFramework(projectRoot);
+      console.log(JSON.stringify(result, null, 2));
+      const levelNames = ["Not adopted", "Partial adoption", "Full adoption"];
+      console.error(`Framework adoption: Level ${result.level} — ${levelNames[result.level]}`);
+      break;
+    }
+
+    case "list-projects": {
+      const workspaceRoot = resolveRoot(args[0]);
+      const projects = listProjects(workspaceRoot);
+      if (projects.length === 0) {
+        console.log("No projects found with .ai/STATE.json");
+      } else {
+        console.log(JSON.stringify(projects, null, 2));
+      }
       break;
     }
 

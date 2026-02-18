@@ -570,6 +570,151 @@ export function startStory(projectRoot: string, storyId: string): State {
   return state;
 }
 
+// ─── Query Functions (for OpenClaw LLM — zero executor cost) ─────────────────
+
+/**
+ * Get a human-friendly project status summary.
+ * OpenClaw calls this when the user asks "how's the project?" or "open project X".
+ *
+ * Returns structured data that OpenClaw LLM can translate to natural language.
+ */
+export interface ProjectStatus {
+  project: string;
+  task_type: string;
+  story: string | null;
+  step: string;
+  status: string;
+  attempt: number;
+  max_attempts: number;
+  reason: string | null;
+  tests: { pass: number; fail: number; skip: number } | null;
+  lint_pass: boolean | null;
+  files_changed: string[];
+  blocked_by: string[];
+  human_note: string | null;
+  memory_summary: string | null;
+  has_framework: FrameworkDetection;
+}
+
+export interface FrameworkDetection {
+  has_state: boolean;
+  has_memory: boolean;
+  has_context: boolean;
+  has_constitution: boolean;
+  has_sdd: boolean;
+  has_handoff: boolean;
+  has_history: boolean;
+  /** Adoption level: 0 = none, 1 = partial (some files), 2 = full (all core files) */
+  level: 0 | 1 | 2;
+}
+
+/**
+ * Detect whether a project uses the Agentic Coding Framework.
+ * OpenClaw calls this when the user asks "is this project using the framework?"
+ */
+export function detectFramework(projectRoot: string): FrameworkDetection {
+  const check = (p: string) => existsSync(join(projectRoot, p));
+
+  const has_state = check(".ai/STATE.json");
+  const has_memory = check("PROJECT_MEMORY.md");
+  const has_context = check("PROJECT_CONTEXT.md");
+  const has_constitution = check("docs/constitution.md");
+  const has_sdd = check("docs/sdd.md");
+  const has_handoff = check(".ai/HANDOFF.md");
+  const has_history = check(".ai/history.md");
+
+  const core = [has_state, has_memory, has_context, has_constitution, has_sdd];
+  const coreCount = core.filter(Boolean).length;
+
+  let level: 0 | 1 | 2 = 0;
+  if (coreCount === core.length) level = 2;
+  else if (coreCount > 0) level = 1;
+
+  return {
+    has_state, has_memory, has_context, has_constitution,
+    has_sdd, has_handoff, has_history, level,
+  };
+}
+
+/**
+ * Get comprehensive project status for OpenClaw to summarize to the user.
+ * Reads STATE.json + first 20 lines of PROJECT_MEMORY.md for NEXT items.
+ */
+export function queryProjectStatus(projectRoot: string): ProjectStatus {
+  const state = readState(projectRoot);
+  const framework = detectFramework(projectRoot);
+
+  // Read MEMORY summary (first 30 lines, extract NEXT section)
+  let memory_summary: string | null = null;
+  const memoryPath = join(projectRoot, "PROJECT_MEMORY.md");
+  if (existsSync(memoryPath)) {
+    const content = readFileSync(memoryPath, "utf-8");
+    // Extract NEXT section
+    const nextMatch = content.match(/## NEXT[\s\S]*?(?=## |$)/);
+    if (nextMatch) {
+      memory_summary = nextMatch[0].trim().slice(0, 500); // cap at 500 chars
+    }
+  }
+
+  return {
+    project: state.project,
+    task_type: state.task_type,
+    story: state.story,
+    step: state.step,
+    status: state.status,
+    attempt: state.attempt,
+    max_attempts: state.max_attempts,
+    reason: state.reason,
+    tests: state.tests,
+    lint_pass: state.lint_pass,
+    files_changed: state.files_changed,
+    blocked_by: state.blocked_by,
+    human_note: state.human_note,
+    memory_summary,
+    has_framework: framework,
+  };
+}
+
+/**
+ * Scan a workspace directory for all projects that have .ai/STATE.json.
+ * OpenClaw calls this when the user asks "list my projects" or "switch project".
+ */
+export function listProjects(
+  workspaceRoot: string
+): Array<{ name: string; dir: string; step: string; status: string; story: string | null }> {
+  const { readdirSync, statSync } = require("fs") as typeof import("fs");
+  const results: Array<{ name: string; dir: string; step: string; status: string; story: string | null }> = [];
+
+  let entries: string[];
+  try {
+    entries = readdirSync(workspaceRoot);
+  } catch {
+    return results;
+  }
+
+  for (const entry of entries) {
+    const dir = join(workspaceRoot, entry);
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+      const stateFile = join(dir, ".ai", "STATE.json");
+      if (existsSync(stateFile)) {
+        const state = JSON.parse(readFileSync(stateFile, "utf-8")) as State;
+        results.push({
+          name: state.project,
+          dir: entry,
+          step: state.step,
+          status: state.status,
+          story: state.story,
+        });
+      }
+    } catch {
+      // skip unreadable directories
+    }
+  }
+
+  return results;
+}
+
 // ─── Start Custom Task ──────────────────────────────────────────────────────
 
 /**

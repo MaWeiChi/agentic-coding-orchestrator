@@ -399,3 +399,139 @@ Step names use **kebab-case**, matching the TypeScript implementation in
 
 Read `references/protocol.md` for the complete table with all fields and the full
 Multi-Executor collaboration specification.
+
+## OpenClaw Integration Guide
+
+OpenClaw is the conversation layer between the human user and the orchestrator.
+OpenClaw uses a low-cost LLM to understand user intent, then decides **what to call**:
+
+- **Read files only** → answer from project data, zero executor cost
+- **Call orchestrator function** → deterministic, zero LLM cost
+- **Dispatch Claude Code** → high cost, only when code changes are needed
+
+### Decision Matrix
+
+When the user says something, OpenClaw should classify it into one of these categories:
+
+| User Intent | Category | What OpenClaw Does | Cost |
+|-------------|----------|-------------------|------|
+| "開啟專案 A" / "Open project A" | **Query** | `readState(projectRoot)` + read `PROJECT_MEMORY.md` → summarize current status to user | Free |
+| "繼續專案 B" / "Continue project B" | **Dispatch** | `dispatch(projectRoot)` → pipe prompt to Claude Code → `applyHandoff()` | Claude Code tokens |
+| "這專案有沒有用 framework" / "Is this project using the framework?" | **Detect** | Check if `.ai/STATE.json`, `PROJECT_CONTEXT.md`, `PROJECT_MEMORY.md` exist | Free |
+| "測試狀況如何" / "How are the tests?" | **Query** | `readState(projectRoot)` → read `state.tests`, `state.failing_tests`, `state.lint_pass` | Free |
+| "還有哪些可以做" / "What's left to do?" | **Query** | Read `PROJECT_MEMORY.md` → extract NEXT section items | Free |
+| "幫我 refactor auth module" / "Refactor the auth module" | **Custom Dispatch** | `startCustom(projectRoot, instruction)` → `dispatch()` → Claude Code | Claude Code tokens |
+| "目前在哪個步驟" / "What step are we on?" | **Query** | `readState(projectRoot)` → `state.step`, `state.status`, `state.attempt` | Free |
+| "為什麼卡住了" / "Why is it blocked?" | **Query** | `readState(projectRoot)` → `state.reason`, `state.human_note`, `state.blocked_by` | Free |
+| "approve" / "核准" | **Action** | `approveReview(projectRoot, humanNote?)` | Free |
+| "reject，需要改 X" / "Reject, need to change X" | **Action** | `rejectReview(projectRoot, reason, note)` | Free |
+| "開新 story US-007" / "Start story US-007" | **Action** | `startStory(projectRoot, "US-007")` | Free |
+| "把 moment 換成 date-fns" / "Replace moment with date-fns" | **Custom Dispatch** | `startCustom(projectRoot, "Replace moment.js with date-fns")` → `dispatch()` | Claude Code tokens |
+| "列出所有專案" / "List all projects" | **Query** | Scan workspace for directories containing `.ai/STATE.json` | Free |
+| "專案 A 跟 B 的進度比較" / "Compare progress of A and B" | **Query** | `readState()` for both projects → compare step/status | Free |
+
+### Classification Rules for OpenClaw LLM
+
+```
+IF user asks a QUESTION about project status, progress, tests, or history
+   → READ files (STATE.json, PROJECT_MEMORY.md, .ai/history.md)
+   → Summarize and respond
+   → DO NOT dispatch Claude Code
+
+IF user gives an INSTRUCTION that requires code changes
+   → Check if it fits a User Story (new feature with clear scope)
+     YES → startStory() + dispatch()
+     NO  → startCustom(instruction) + dispatch()
+   → Pipe prompt to Claude Code
+   → After exit: applyHandoff()
+
+IF user gives a COMMAND (approve, reject, start)
+   → Call the corresponding orchestrator function directly
+   → Respond with result
+
+IF user asks about framework adoption
+   → Check file existence (.ai/STATE.json, PROJECT_CONTEXT.md, etc.)
+   → Report adoption level (0/1/2)
+```
+
+### Multi-Project Management
+
+OpenClaw should maintain a workspace registry (a directory containing multiple
+projects). When the user says "open project A", OpenClaw:
+
+1. Scans the workspace for directories with `.ai/STATE.json`
+2. Matches by project name (from `state.project` field) or directory name
+3. Sets the active project root
+4. Reads STATE + MEMORY and reports status to the user
+
+When switching projects, OpenClaw does NOT need to dispatch anything. It just
+reads the persisted state files.
+
+### What OpenClaw Tells the User
+
+After dispatching Claude Code, OpenClaw should report back in human-friendly
+language. Here's how to translate orchestrator results:
+
+| DispatchResult.type | What to tell the user |
+|--------------------|----------------------|
+| `dispatched` | "正在執行 {step} (第 {attempt} 次)..." / "Running {step} (attempt {attempt})..." |
+| `done` | "Story {story} 完成了！" / "Story {story} is complete!" |
+| `needs_human` | "需要你 review：{message}" / "Needs your review: {message}" |
+| `blocked` | "卡住了：{reason}" / "Blocked: {reason}" |
+| `already_running` | "還在執行中（已跑 {elapsed} 分鐘）" / "Still running ({elapsed} min)" |
+| `timeout` | "超時了，需要你決定下一步" / "Timed out, need your input" |
+
+### Conversation Examples
+
+```
+User: 打開我的 todo-app 專案
+OpenClaw: [reads .ai/STATE.json + PROJECT_MEMORY.md]
+OpenClaw: todo-app 目前在 impl 步驟，第 2 次嘗試，狀態是 failing。
+         上次的問題是 test_timeout。MEMORY 裡的 NEXT 有：
+         - 完成購物車結帳流程
+         - 加入 Stripe 付款整合
+         要繼續嗎？
+
+User: 繼續
+OpenClaw: [dispatch() → Claude Code → applyHandoff()]
+OpenClaw: impl 步驟完成了，測試 pass=12 fail=0。自動進入 verify 步驟...
+         verify 也通過了，正在更新 MEMORY...
+         Story US-003 完成！
+
+User: 幫我把所有 console.log 換成 structured logger
+OpenClaw: [startCustom(root, "Replace all console.log with structured logger")]
+         [dispatch() → Claude Code → applyHandoff()]
+OpenClaw: 完成了，改了 14 個檔案，把 console.log 都換成 pino logger。
+         測試全部通過。
+
+User: 測試狀況如何？
+OpenClaw: [readState() → state.tests]
+OpenClaw: 最後一次測試：pass=47, fail=0, skip=3。lint 也通過了。
+```
+
+### API Surface Summary
+
+Functions OpenClaw needs to know:
+
+| Function | Purpose | When to Use |
+|----------|---------|------------|
+| `readState(root)` | Read current STATE.json | Any status query |
+| `initState(root, name)` | Initialize new project | "Create/init project" |
+| `startStory(root, id)` | Begin User Story pipeline | "Start US-007" |
+| `startCustom(root, instruction)` | Begin ad-hoc task | Any non-Story instruction |
+| `dispatch(root)` | Get next prompt / advance | After start, or "continue" |
+| `applyHandoff(root)` | Parse HANDOFF after executor | After Claude Code exits |
+| `runPostCheck(root, execSync)` | Run post_check command | After executor, before handoff |
+| `approveReview(root, note?)` | Approve review step | "Approve" / "LGTM" |
+| `rejectReview(root, reason, note?)` | Reject review step | "Reject because..." |
+
+Files OpenClaw can read directly (no function needed):
+
+| File | Contains | When to Read |
+|------|----------|-------------|
+| `.ai/STATE.json` | Step, status, tests, reason | Status queries |
+| `PROJECT_MEMORY.md` | NOW/NEXT/DONE sections | "What's left?", "What was done?" |
+| `PROJECT_CONTEXT.md` | Project purpose, tech stack | "What is this project?" |
+| `.ai/HANDOFF.md` | Last session summary | "What happened last time?" |
+| `.ai/history.md` | All session logs | "Show me the history" |
+| `docs/constitution.md` | Architectural constraints | "What are the rules?" |

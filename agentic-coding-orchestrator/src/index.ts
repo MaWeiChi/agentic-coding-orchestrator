@@ -57,4 +57,10 @@ export {
   rejectReview,
   startStory,
   startCustom,
+  // Query functions (for OpenClaw LLM — zero executor cost)
+  type ProjectStatus,
+  type FrameworkDetection,
+  detectFramework,
+  queryProjectStatus,
+  listProjects,
 } from "./dispatch";

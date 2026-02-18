@@ -1,6 +1,6 @@
 # Agentic Coding Orchestrator
 
-Deterministic orchestrator core for the [Agentic Coding Framework](https://github.com/MaWeiChi/Agentic-Coding-Framework). Drives the micro-waterfall pipeline (BDD → SDD → Contract → Review → Scaffold → Impl → Verify → Update Memory) with zero LLM tokens — all decisions are table lookups and template fills.
+Deterministic orchestrator core for the [Agentic Coding Framework](https://github.com/MaWeiChi/Agentic-Coding-Framework). Drives User Story pipelines and ad-hoc tasks with zero LLM tokens — all decisions are table lookups and template fills. Designed to be called by OpenClaw (or any LLM-powered conversation layer).
 
 ## Architecture
 
@@ -50,6 +50,15 @@ npx ts-node src/cli.ts approve ./my-project "Looks good, rename the module"
 
 # Reject review step
 npx ts-node src/cli.ts reject ./my-project needs_clarification "What does fast mean?"
+
+# Custom task (any ad-hoc instruction)
+npx ts-node src/cli.ts start-custom ./my-project "Replace all console.log with pino logger"
+npx ts-node src/cli.ts dispatch ./my-project
+
+# Query project status (for OpenClaw / conversation layer)
+npx ts-node src/cli.ts query ./my-project
+npx ts-node src/cli.ts detect ./my-project
+npx ts-node src/cli.ts list-projects ./workspace
 ```
 
 ### Shell Scripts (Claude Code Integration)
@@ -62,36 +71,41 @@ bin/dispatch-claude-code.sh ./my-project
 bin/notify-agi.sh ./my-project
 ```
 
-## Integration Pattern
+## Two Pipelines
 
-The orchestrator is designed as a library. Import it into your own main loop:
+**Story Pipeline** (micro-waterfall): `bdd → sdd-delta → contract → review → scaffold → impl → verify → update-memory → done`
+
+**Custom Pipeline** (ad-hoc): `custom → update-memory → done`
+
+The Story pipeline enforces BDD/SDD/Review gates for new features. The Custom pipeline is a passthrough for any instruction — refactoring, code review, bug fixes, DevOps, etc. See `SKILL.md` for the full use case catalog.
+
+## OpenClaw Integration
+
+The orchestrator is designed to be called by OpenClaw (a low-cost LLM conversation layer). OpenClaw reads `SKILL.md` to learn the API, then classifies user requests:
+
+- **Questions** (status, tests, progress) → call `queryProjectStatus()` or read files directly → zero cost
+- **Commands** (approve, reject, start) → call orchestrator functions directly → zero cost
+- **Code tasks** → `startStory()` or `startCustom()` → `dispatch()` → Claude Code → executor cost
 
 ```typescript
 import {
-  initState, dispatch, applyHandoff, runPostCheck,
-  approveReview, startStory,
+  initState, dispatch, applyHandoff, startStory, startCustom,
+  queryProjectStatus, detectFramework, listProjects,
 } from "@agentic-coding/orchestrator-core";
-import { execSync } from "child_process";
 
-initState(projectRoot, "my-app");
+// OpenClaw: "how's the project?"
+const status = queryProjectStatus(projectRoot);
+
+// OpenClaw: "start story US-001"
 startStory(projectRoot, "US-001");
+const result = dispatch(projectRoot);
 
-while (true) {
-  const result = dispatch(projectRoot);
-  switch (result.type) {
-    case "dispatched":
-      spawnExecutor(projectRoot, result.prompt);
-      runPostCheck(projectRoot, execSync);
-      applyHandoff(projectRoot);
-      break;
-    case "needs_human":
-      // Wait for human, then approveReview() or rejectReview()
-      break;
-    case "done":
-      console.log(result.summary);
-      return;
-  }
-}
+// OpenClaw: "refactor the auth module"
+startCustom(projectRoot, "Refactor auth module into separate package");
+const result = dispatch(projectRoot);
+
+// OpenClaw: "list all projects"
+const projects = listProjects(workspaceRoot);
 ```
 
 ## Three-File Protocol
