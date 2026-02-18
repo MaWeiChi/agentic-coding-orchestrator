@@ -1,5 +1,5 @@
 {
-  "name": "@agentic-coding/openclaw-core",
+  "name": "@agentic-coding/orchestrator-core",
   "version": "0.1.0",
   "description": "Orchestrator core for the Agentic Coding Protocol — state machine, rules table, dispatch logic",
   "type": "commonjs",
