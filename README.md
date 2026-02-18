@@ -152,6 +152,10 @@ OpenClaw (low-cost LLM) reads `SKILL.md` to learn the full API. Classification:
 
 **CRITICAL RULE**: When user says "用 CC" / "use CC" (case-insensitive), MUST use orchestrator flow regardless of project state.
 
+## Acknowledgments
+
+- [claude-code-hooks](https://github.com/win4r/claude-code-hooks) by [@win4r](https://github.com/win4r) — Shell hook pattern reference. Our `dispatch-claude-code.sh` and `notify-agi.sh` are inspired by this project's clean, minimal hook design.
+
 ## Related
 
 - [Agentic Coding Framework](https://github.com/MaWeiChi/Agentic-Coding-Framework) — Full framework with Protocol, Lifecycle, Templates
