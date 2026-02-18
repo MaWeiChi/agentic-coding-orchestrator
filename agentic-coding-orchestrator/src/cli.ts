@@ -89,7 +89,8 @@ try {
         process.exit(1);
       }
       const label = args[2] || undefined; // optional label
-      const state = startCustom(projectRoot, instruction, label);
+      const agentTeams = args[3] === "--agent-teams";
+      const state = startCustom(projectRoot, instruction, { label, agentTeams });
       console.log(`Started custom task: "${instruction}"`);
       console.log(`  label: ${state.story}, step: ${state.step}, task_type: ${state.task_type}`);
       break;
