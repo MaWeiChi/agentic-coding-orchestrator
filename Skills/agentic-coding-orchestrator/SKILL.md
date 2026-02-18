@@ -432,16 +432,31 @@ When the user says something, OpenClaw should classify it into one of these cate
 
 ### Classification Rules for OpenClaw LLM
 
+**CRITICAL RULE: When the user explicitly says "use Claude Code" / "用 Claude Code" /
+"讓 Claude Code 做", OpenClaw MUST use the orchestrator flow. This is non-negotiable,
+regardless of whether the project has STATE.json or any framework files.**
+`startCustom()` and `startStory()` auto-initialize STATE.json if it doesn't exist.
+
 ```
+IF user EXPLICITLY mentions "Claude Code" or "用 Claude Code"
+   → ALWAYS use orchestrator flow:
+     1. startCustom(root, instruction) or startStory(root, id)
+        (auto-creates .ai/STATE.json if missing — infers project name)
+     2. dispatch(root) → get prompt
+     3. Pipe prompt to Claude Code
+     4. applyHandoff(root) → update STATE
+   → This applies even if the project has ZERO framework files
+
 IF user asks a QUESTION about project status, progress, tests, or history
    → READ files (STATE.json, PROJECT_MEMORY.md, .ai/history.md)
    → Summarize and respond
    → DO NOT dispatch Claude Code
 
-IF user gives an INSTRUCTION that requires code changes
+IF user gives an INSTRUCTION that requires code changes (without mentioning Claude Code)
    → Check if it fits a User Story (new feature with clear scope)
      YES → startStory() + dispatch()
      NO  → startCustom(instruction) + dispatch()
+   → Both auto-create STATE.json if needed
    → Pipe prompt to Claude Code
    → After exit: applyHandoff()
 
@@ -450,39 +465,48 @@ IF user gives a COMMAND (approve, reject, start)
    → Respond with result
 
 IF user asks about framework adoption
-   → Check file existence (.ai/STATE.json, PROJECT_CONTEXT.md, etc.)
-   → Report adoption level (0/1/2)
+   → detectFramework(projectRoot) → Level 0/1/2
 ```
+
+### Auto-Initialization
+
+When `startStory()` or `startCustom()` is called on a project without `.ai/STATE.json`,
+the orchestrator will **automatically**:
+
+1. **Infer project name** from `package.json` → `go.mod` → directory name
+2. **Create `.ai/STATE.json`** with initial state
+3. **Proceed normally** with the requested task
+
+This means **every project in the workspace is a valid target** — the framework
+adopts itself on first use. No manual `initState()` needed.
 
 ### Non-Framework Projects
 
-Not every project uses the Agentic Coding Framework. All query functions handle
-this gracefully:
+All query functions work on non-framework projects too:
 
-- `queryProjectStatus()` → returns `status: "not_initialized"`, `step: "none"`,
-  plus `has_framework.level: 0`. Infers project name from `package.json` if available.
+- `queryProjectStatus()` → returns `status: "not_initialized"`, `has_framework.level: 0`
 - `detectFramework()` → returns all flags as `false`, `level: 0`
-- `listProjects()` → detects ANY project directory (package.json, go.mod, Cargo.toml,
-  pyproject.toml, .git, etc.) and marks `has_framework: false` for non-framework ones
+- `listProjects()` → detects ANY project (package.json, go.mod, Cargo.toml, .git, etc.)
 
-When OpenClaw encounters a non-framework project, it can:
-1. **Report the state**: "This project doesn't use the Agentic Coding Framework yet"
-2. **Offer to adopt**: `initState(projectRoot, projectName)` to initialize STATE.json
-3. **Still dispatch custom tasks**: `startCustom()` works after `initState()`
-4. **Use Claude Code directly**: If the user just wants a quick task done, OpenClaw
-   can skip the orchestrator and call Claude Code directly with the instruction
+For **action** functions, auto-init kicks in:
 
 ```
-User: 打開 legacy-api 專案
-OpenClaw: [queryProjectStatus(root)]
-OpenClaw: legacy-api 目前沒有使用 Agentic Coding Framework（偵測到 package.json 和 .git）。
-         要幫你初始化 framework 嗎？或是你有什麼想讓我做的？
-
-User: 先幫我做 code review
-OpenClaw: [initState(root, "legacy-api")]
-         [startCustom(root, "Review the codebase for code quality and potential issues")]
+User: 用 Claude Code 幫 legacy-api 做 code review
+OpenClaw: [startCustom("./legacy-api", "Code review")]
+         ↳ no STATE.json → auto-creates .ai/STATE.json for "legacy-api"
          [dispatch() → Claude Code → applyHandoff()]
-OpenClaw: Review 完成了，發現 8 個問題...
+OpenClaw: Code review 完成了，發現 8 個問題...
+
+User: 再幫我 refactor auth module
+OpenClaw: [startCustom("./legacy-api", "Refactor auth module")]
+         ↳ STATE.json already exists from previous task
+         [dispatch() → Claude Code → applyHandoff()]
+OpenClaw: Refactor 完成了...
+
+User: 打開 legacy-api
+OpenClaw: [queryProjectStatus("./legacy-api")]
+OpenClaw: legacy-api 目前在 done 步驟。上次做了 auth module refactor。
+         MEMORY 裡的 NEXT 有：...
 ```
 
 ### Multi-Project Management

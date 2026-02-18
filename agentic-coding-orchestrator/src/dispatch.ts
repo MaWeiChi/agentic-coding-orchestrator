@@ -541,13 +541,57 @@ export function rejectReview(
   writeState(projectRoot, state);
 }
 
+// ─── Auto-Init Helper ────────────────────────────────────────────────────────
+
+/**
+ * Ensure STATE.json exists. If not, auto-initialize it.
+ * This allows startStory() and startCustom() to work on ANY project,
+ * even if the Agentic Coding Framework hasn't been set up yet.
+ *
+ * Project name is inferred from: package.json name → go.mod module →
+ * directory name (in that order).
+ */
+function ensureState(projectRoot: string): State {
+  const path = join(projectRoot, ".ai", "STATE.json");
+  if (existsSync(path)) {
+    return readState(projectRoot);
+  }
+
+  // Infer project name
+  let projectName = projectRoot.split("/").filter(Boolean).pop() ?? "project";
+
+  const pkgPath = join(projectRoot, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      if (pkg.name) projectName = pkg.name;
+    } catch { /* ignore */ }
+  }
+
+  const goModPath = join(projectRoot, "go.mod");
+  if (existsSync(goModPath)) {
+    try {
+      const goMod = readFileSync(goModPath, "utf-8");
+      const moduleLine = goMod.split("\n").find((l: string) => l.startsWith("module "));
+      if (moduleLine) {
+        const parts = moduleLine.replace("module ", "").trim().split("/");
+        projectName = parts[parts.length - 1] ?? projectName;
+      }
+    } catch { /* ignore */ }
+  }
+
+  const { state } = initState(projectRoot, projectName);
+  return state;
+}
+
 // ─── Start New Story ─────────────────────────────────────────────────────────
 
 /**
  * Begin a new User Story. Resets state to bdd step with attempt 1.
+ * Auto-initializes STATE.json if the project hasn't adopted the framework yet.
  */
 export function startStory(projectRoot: string, storyId: string): State {
-  const state = readState(projectRoot);
+  const state = ensureState(projectRoot);
   const rule = getRule("bdd");
 
   state.story = storyId;
@@ -822,6 +866,7 @@ export function listProjects(workspaceRoot: string): ProjectEntry[] {
  * micro-waterfall pipeline.
  *
  * Pipeline: custom → update-memory → done
+ * Auto-initializes STATE.json if the project hasn't adopted the framework yet.
  *
  * Use cases: refactoring, code review, bug fix, DevOps, documentation,
  * testing, migration, performance optimization, security, cleanup, etc.
@@ -831,7 +876,7 @@ export function startCustom(
   instruction: string,
   label?: string
 ): State {
-  const state = readState(projectRoot);
+  const state = ensureState(projectRoot);
   const rule = getRule("custom");
 
   state.story = label ?? `CUSTOM-${Date.now()}`;
