@@ -1,6 +1,6 @@
 {
   "name": "@agentic-coding-framework/orchestrator-core",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Zero-token orchestrator for the Agentic Coding Protocol — state machine, rules table, dispatch logic, CC integration",
   "type": "commonjs",
   "main": "dist/index.js",

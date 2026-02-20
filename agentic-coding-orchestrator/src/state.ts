@@ -172,6 +172,79 @@ export function initState(
   return { created: true, state };
 }
 
+// ─── CLAUDE.md Generation ─────────────────────────────────────────────────
+
+/** Path to CLAUDE.md in project root */
+export function claudeMdPath(projectRoot: string): string {
+  return join(projectRoot, "CLAUDE.md");
+}
+
+/**
+ * Generate CLAUDE.md content for ACF-enabled projects.
+ * CC reads this file automatically on every session start,
+ * ensuring it follows the ACF workflow even without dispatch.
+ */
+export function generateClaudeMd(project: string): string {
+  return `# ${project} — Agentic Coding Framework
+
+This project uses the **Agentic Coding Framework (ACF)** with an orchestrator-driven
+micro-waterfall pipeline. You MUST follow the ACF workflow — do NOT work freestyle.
+
+## How to Work in This Project
+
+1. **Check current state first:**
+   Read \`.ai/STATE.json\` to understand which step and status the project is in.
+
+2. **Follow the orchestrator — never skip steps:**
+   The pipeline is: bootstrap → bdd → sdd-delta → contract → review → scaffold → impl → verify → update-memory → done.
+   Each step has specific inputs, outputs, and acceptance criteria.
+
+3. **Use the orchestrator CLI** (preferred):
+   \`\`\`bash
+   orchestrator dispatch .       # Get your current task prompt
+   orchestrator status .         # Check pipeline status
+   \`\`\`
+
+4. **Always update .ai/HANDOFF.md when done:**
+   After completing your work, write a YAML front-matter summary to \`.ai/HANDOFF.md\`
+   with: story, step, attempt, status (pass/failing), reason, files_changed, and tests.
+   The orchestrator hook reads this to advance the pipeline.
+
+## Key Rules
+
+- **Do NOT modify .ai/STATE.json directly** — the orchestrator manages it.
+- **Do NOT skip to a different step** — always complete the current step first.
+- If requirements are unclear, set status: \`failing\` and reason: \`needs_clarification\` in HANDOFF.md.
+- If you find a Constitution violation, set reason: \`constitution_violation\`.
+- Read \`.ai/PROJECT_MEMORY.md\` for cross-session context and architectural decisions.
+
+## Files
+
+| File | Purpose | Who writes |
+|------|---------|-----------|
+| \`.ai/STATE.json\` | Pipeline state machine | Orchestrator only |
+| \`.ai/HANDOFF.md\` | Executor ↔ Orchestrator bridge | You (CC) |
+| \`.ai/PROJECT_MEMORY.md\` | Cross-session knowledge | You (at update-memory step) |
+`;
+}
+
+/**
+ * Write CLAUDE.md to project root.
+ * Returns true if created, false if already exists (no overwrite).
+ */
+export function writeClaudeMd(
+  projectRoot: string,
+  project: string,
+  force = false
+): boolean {
+  const path = claudeMdPath(projectRoot);
+  if (existsSync(path) && !force) {
+    return false;
+  }
+  writeFileSync(path, generateClaudeMd(project), "utf-8");
+  return true;
+}
+
 // ─── Validation ──────────────────────────────────────────────────────────────
 
 const VALID_STEPS: Set<string> = new Set<Step>([

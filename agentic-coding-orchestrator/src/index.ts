@@ -24,6 +24,8 @@ export {
   isMaxedOut,
   markRunning,
   markCompleted,
+  generateClaudeMd,
+  writeClaudeMd,
 } from "./state";
 
 // Rules
@@ -43,6 +45,13 @@ export {
   getFailTarget,
   getStepSequence,
 } from "./rules";
+
+// Auto (unified entry point)
+export {
+  type AutoResult,
+  auto,
+  classify,
+} from "./auto";
 
 // Dispatch
 export {

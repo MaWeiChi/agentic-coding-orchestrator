@@ -16,8 +16,9 @@
 import { resolve } from "path";
 import { execSync } from "child_process";
 
-import { initState, readState } from "./state";
+import { initState, readState, writeClaudeMd } from "./state";
 import { dispatch, applyHandoff, runPostCheck, approveReview, rejectReview, startStory, startCustom, queryProjectStatus, detectFramework, listProjects } from "./dispatch";
+import { auto } from "./auto";
 import type { Reason } from "./state";
 
 const [, , command, ...args] = process.argv;
@@ -26,6 +27,7 @@ function usage(): never {
   console.error(`Usage: orchestrator <command> [args]
 
 Commands:
+  auto <project-root> <message...>                 ★ Unified entry — classify message & route automatically
   init <project-root> <project-name>              Initialize .ai/STATE.json
   start-story <project-root> <story-id>           Begin a new User Story (micro-waterfall)
   start-custom <project-root> <instruction>       Begin a custom ad-hoc task
@@ -52,6 +54,54 @@ function resolveRoot(raw: string | undefined): string {
 
 try {
   switch (command) {
+    case "auto": {
+      const projectRoot = resolveRoot(args[0]);
+      const message = args.slice(1).join(" ");
+      if (!message) {
+        console.error("Error: <message> is required");
+        console.error('Example: orchestrator auto ./project "目前狀態如何"');
+        process.exit(1);
+      }
+      const result = auto(projectRoot, message);
+      // JSON to stdout (machine-readable)
+      console.log(JSON.stringify(result, null, 2));
+      // Human-friendly summary to stderr
+      switch (result.action) {
+        case "query":
+          console.error(`[auto] Query: ${result.data.project} — step=${result.data.step}, status=${result.data.status}`);
+          break;
+        case "dispatched":
+          console.error(`[auto] Dispatched: step=${result.step}, attempt=${result.attempt}, fw_lv=${result.fw_lv}`);
+          break;
+        case "done":
+          console.error(`[auto] Done: ${result.summary}`);
+          break;
+        case "needs_human":
+          console.error(`[auto] Needs human: ${result.message}`);
+          break;
+        case "blocked":
+          console.error(`[auto] Blocked: ${result.reason}`);
+          break;
+        case "approved":
+          console.error(`[auto] Approved${result.note ? ` (note: ${result.note})` : ""}`);
+          break;
+        case "rejected":
+          console.error(`[auto] Rejected: ${result.reason}${result.note ? ` — ${result.note}` : ""}`);
+          break;
+        case "detected":
+          console.error(`[auto] Framework level: ${result.framework.level}`);
+          break;
+        case "listed":
+          console.error(`[auto] Found ${result.projects.length} project(s)`);
+          break;
+        case "error":
+          console.error(`[auto] Error: ${result.message}`);
+          process.exit(1);
+          break;
+      }
+      break;
+    }
+
     case "init": {
       const projectRoot = resolveRoot(args[0]);
       const projectName = args[1];
@@ -64,6 +114,11 @@ try {
         console.log(`Initialized .ai/STATE.json for "${projectName}"`);
       } else {
         console.log(`STATE.json already exists (step: ${state.step}, status: ${state.status})`);
+      }
+      // Always ensure CLAUDE.md exists (idempotent, won't overwrite)
+      const claudeCreated = writeClaudeMd(projectRoot, projectName);
+      if (claudeCreated) {
+        console.log(`Created CLAUDE.md (CC will auto-detect ACF on session start)`);
       }
       break;
     }

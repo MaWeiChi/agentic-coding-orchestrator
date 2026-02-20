@@ -255,26 +255,32 @@ export function buildPrompt(state: State, rule: StepRule): string {
     lines.push("");
   }
 
-  // Step instruction
+  // === PRIMARY TASK (this is the actual work CC must do) ===
+  lines.push("=== YOUR PRIMARY TASK ===");
   lines.push(rule.step_instruction);
   lines.push("");
+  lines.push("Focus on completing the task above FIRST. Modify source files, create");
+  lines.push("tests, update documents — whatever the task requires. Do NOT stop after");
+  lines.push("just updating .ai/HANDOFF.md — that is only the final bookkeeping step.");
+  lines.push("=========================");
+  lines.push("");
 
-  // Output rules (always appended)
-  lines.push("Output rules:");
+  // === POST-TASK BOOKKEEPING (only after the real work is done) ===
+  lines.push("After you have completed ALL the work above, do this final bookkeeping:");
   lines.push("- Only modify affected files and paragraphs, don't rewrite unrelated content");
-  lines.push("- After completion, update .ai/HANDOFF.md:");
+  lines.push("- Update .ai/HANDOFF.md as a summary of what you did:");
   lines.push(
     "  - YAML front matter: fill in story, step, attempt, status, reason, files_changed, tests values"
   );
   lines.push(
     "  - Markdown body: record what was done, what's unresolved, what next session should note"
   );
-  lines.push("- If requirements unclear, fill reason field with needs_clarification");
+  lines.push("- If requirements unclear, set status: failing and reason: needs_clarification");
   lines.push(
-    "- If Constitution violation found, fill reason field with constitution_violation"
+    "- If Constitution violation found, set status: failing and reason: constitution_violation"
   );
   lines.push(
-    "- If touching Non-Goals scope, fill reason field with scope_warning"
+    "- If touching Non-Goals scope, set status: failing and reason: scope_warning"
   );
 
   return lines.join("\n");

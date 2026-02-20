@@ -83,6 +83,13 @@ chmod +x ~/.claude/hooks/*.sh
 
 ### Dispatch
 
+> **Note:** The script runs Claude Code in headless mode (`-p`), which cannot
+> prompt for permissions interactively. It defaults to
+> `--dangerously-skip-permissions` (a standalone flag, **not** a
+> `--permission-mode` value) unless you explicitly pass
+> `--permission-mode <mode>`. Also add `"skipDangerousModePermissionPrompt": true`
+> to your `~/.claude/settings.json` to suppress the WARNING dialog.
+
 ```bash
 # From orchestrator (auto-generates prompt from STATE.json)
 bin/dispatch-claude-code.sh --from-orchestrator ./project
@@ -96,6 +103,12 @@ bin/dispatch-claude-code.sh \
   --channel whatsapp \
   --notify-target "+886912345678" \
   -n "fix-websocket"
+
+# Override permission mode (e.g. for CI with pre-approved tool list)
+bin/dispatch-claude-code.sh \
+  --permission-mode plan \
+  --allowed-tools "Read,Write,Edit,Bash" \
+  -p "Add unit tests for auth module"
 ```
 
 ### Notification Flow

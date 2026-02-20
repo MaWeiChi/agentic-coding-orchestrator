@@ -12,19 +12,10 @@
 
 set -uo pipefail
 
-RESULT_DIR="${RESULT_DIR:-.ai/claude-code-results}"
-META_FILE="${RESULT_DIR}/task-meta.json"
-LOG="${RESULT_DIR}/hook.log"
-
-mkdir -p "$RESULT_DIR"
-log() { echo "[$(date -Iseconds)] $*" >> "$LOG"; }
-
-log "=== Hook fired ==="
-
-# ---- Read stdin (Claude Code hook event) ----
+# ---- Read stdin (Claude Code hook event) FIRST to get CWD ----
 INPUT=""
 if [ -t 0 ]; then
-    log "stdin is tty, skip"
+    true  # stdin is tty, skip
 elif [ -e /dev/stdin ]; then
     INPUT=$(timeout 2 cat /dev/stdin 2>/dev/null || true)
 fi
@@ -33,28 +24,46 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null || ech
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // "unknown"' 2>/dev/null || echo "unknown")
 
+# Resolve RESULT_DIR relative to CWD (project root) so all events share the same lock dir
+if [ -n "$CWD" ] && [ -d "$CWD" ]; then
+    RESULT_DIR="${CWD}/${RESULT_DIR:-.ai/claude-code-results}"
+else
+    RESULT_DIR="${RESULT_DIR:-.ai/claude-code-results}"
+fi
+META_FILE="${RESULT_DIR}/task-meta.json"
+LOG="${RESULT_DIR}/hook.log"
+
+mkdir -p "$RESULT_DIR"
+log() { echo "[$(date -Iseconds)] $*" >> "$LOG"; }
+
+log "=== Hook fired ==="
 log "session=$SESSION_ID cwd=$CWD event=$EVENT"
 
 # ---- Dedup 1: session-ID lock (one send per CC session) ----
+# Uses a GLOBAL lock dir (under /tmp) so Stop + SessionEnd share the same lock
+# even if RESULT_DIR differs between events.
+GLOBAL_LOCK_DIR="/tmp/orchestrator-hook-locks"
+mkdir -p "$GLOBAL_LOCK_DIR"
+
 if [ -n "$SESSION_ID" ] && [ "$SESSION_ID" != "unknown" ]; then
-    SESSION_LOCK="${RESULT_DIR}/.session-${SESSION_ID}.lock"
+    SESSION_LOCK="${GLOBAL_LOCK_DIR}/.session-${SESSION_ID}.lock"
     if [ -f "$SESSION_LOCK" ]; then
         log "Already processed session $SESSION_ID, skip"
         exit 0
     fi
     touch "$SESSION_LOCK"
     # Clean up session locks older than 1 hour
-    find "$RESULT_DIR" -name '.session-*.lock' -mmin +60 -delete 2>/dev/null || true
+    find "$GLOBAL_LOCK_DIR" -name '.session-*.lock' -mmin +60 -delete 2>/dev/null || true
 fi
 
-# ---- Dedup 2: time-based lock (30s cooldown, macOS + Linux compatible) ----
-LOCK_FILE="${RESULT_DIR}/.hook-lock"
+# ---- Dedup 2: time-based lock (5s cooldown — Stop and SessionEnd fire within ~1s) ----
+LOCK_FILE="${GLOBAL_LOCK_DIR}/.hook-lock"
 if [ -f "$LOCK_FILE" ]; then
     # macOS: stat -f %m  |  Linux: stat -c %Y
     LOCK_TIME=$(stat -f %m "$LOCK_FILE" 2>/dev/null || stat -c %Y "$LOCK_FILE" 2>/dev/null || echo 0)
     NOW=$(date +%s)
     AGE=$(( NOW - LOCK_TIME ))
-    if [ "$AGE" -lt 30 ]; then
+    if [ "$AGE" -lt 5 ]; then
         log "Duplicate within ${AGE}s, skip"
         exit 0
     fi
@@ -102,12 +111,21 @@ log "Wrote latest.json"
 
 # ---- Apply HANDOFF (if orchestrator project) ----
 if [ -n "$CWD" ] && [ -f "$CWD/.ai/STATE.json" ] && [ -f "$CWD/.ai/HANDOFF.md" ]; then
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    CLI="${SCRIPT_DIR}/../agentic-coding-orchestrator/src/cli.ts"
-    if [ -f "$CLI" ]; then
-        npx ts-node "$CLI" apply-handoff "$CWD" >> "$LOG" 2>&1 && \
+    if command -v orchestrator &>/dev/null; then
+        orchestrator apply-handoff "$CWD" >> "$LOG" 2>&1 && \
             log "Applied HANDOFF to STATE" || \
             log "HANDOFF apply failed"
+    else
+        # Fallback: try local CLI via npx
+        SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+        CLI="${SCRIPT_DIR}/../agentic-coding-orchestrator/src/cli.ts"
+        if [ -f "$CLI" ]; then
+            npx ts-node "$CLI" apply-handoff "$CWD" >> "$LOG" 2>&1 && \
+                log "Applied HANDOFF to STATE (via npx)" || \
+                log "HANDOFF apply failed (via npx)"
+        else
+            log "No orchestrator CLI found, skip HANDOFF apply"
+        fi
     fi
 fi
 

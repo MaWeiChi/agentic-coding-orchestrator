@@ -24,9 +24,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-RESULT_DIR="${RESULT_DIR:-.ai/claude-code-results}"
-META_FILE="${RESULT_DIR}/task-meta.json"
-TASK_OUTPUT="${RESULT_DIR}/task-output.txt"
 
 # Defaults
 PROMPT=""
@@ -58,7 +55,7 @@ done
 # If --from-orchestrator, use CLI to get prompt
 if [ -n "$FROM_ORCHESTRATOR" ]; then
     WORKDIR="$FROM_ORCHESTRATOR"
-    PROMPT=$(npx ts-node "${SCRIPT_DIR}/../agentic-coding-orchestrator/src/cli.ts" dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
+    PROMPT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
     if [ -z "$PROMPT" ]; then
         echo "Orchestrator returned no prompt (story may be done or needs human)" >&2
         exit 0
@@ -71,55 +68,69 @@ if [ -z "$PROMPT" ]; then
 fi
 
 # ---- 1. Write task metadata ----
+ABS_WORKDIR="$(cd "$WORKDIR" && pwd)"
+
+# Resolve RESULT_DIR relative to WORKDIR, not caller's cwd
+RESULT_DIR="${ABS_WORKDIR}/${RESULT_DIR:-.ai/claude-code-results}"
+META_FILE="${RESULT_DIR}/task-meta.json"
+TASK_OUTPUT="${RESULT_DIR}/task-output.txt"
+
 mkdir -p "$RESULT_DIR"
 
-cat > "$META_FILE" << EOF
+cat > "$META_FILE" << METAEOF
 {
   "task_name": "${TASK_NAME}",
   "group": "${GROUP}",
   "notify_channel": "${CHANNEL}",
   "notify_target": "${NOTIFY_TARGET}",
-  "workdir": "$(cd "$WORKDIR" && pwd)",
+  "workdir": "${ABS_WORKDIR}",
   "started_at": "$(date -Iseconds)",
   "status": "running"
 }
-EOF
+METAEOF
 
-echo "Task: $TASK_NAME"
-echo "Workdir: $WORKDIR"
+echo "Dispatched task: ${TASK_NAME} in ${ABS_WORKDIR}" >&2
 
-# ---- 2. Clear previous output ----
-> "$TASK_OUTPUT" 2>/dev/null || true
+# ---- 2. Build claude CLI command ----
+CLAUDE_CMD=(claude)
 
-# ---- 3. Build claude command ----
-CMD=(claude -p "$PROMPT")
-
+# Permission handling:
+#   --dangerously-skip-permissions is a standalone flag (NOT a --permission-mode value)
+#   Headless (-p) mode cannot prompt interactively, so default to skip permissions.
 if [ -n "$PERMISSION_MODE" ]; then
-    CMD+=(--permission-mode "$PERMISSION_MODE")
-fi
-if [ -n "$ALLOWED_TOOLS" ]; then
-    CMD+=(--allowedTools "$ALLOWED_TOOLS")
+    # Caller explicitly set a mode — respect it
+    CLAUDE_CMD+=(--permission-mode "$PERMISSION_MODE")
+else
+    # Default for headless: skip all permission prompts
+    CLAUDE_CMD+=(--dangerously-skip-permissions)
 fi
 
-# ---- 4. Run Claude Code ----
-echo "Launching Claude Code..."
-cd "$WORKDIR"
-"${CMD[@]}" 2>&1 | tee "$TASK_OUTPUT"
+if [ -n "$ALLOWED_TOOLS" ]; then
+    IFS=',' read -ra TOOLS <<< "$ALLOWED_TOOLS"
+    for tool in "${TOOLS[@]}"; do
+        CLAUDE_CMD+=(--allowedTools "$tool")
+    done
+fi
+
+# -p and prompt go last
+CLAUDE_CMD+=(-p "$PROMPT")
+
+# ---- 3. Run Claude Code ----
+cd "$ABS_WORKDIR"
+export RESULT_DIR
+
+"${CLAUDE_CMD[@]}" 2>&1 | tee "$TASK_OUTPUT"
 EXIT_CODE=${PIPESTATUS[0]}
 
-echo "Claude Code exited: $EXIT_CODE"
-
-# ---- 5. Update meta ----
+# ---- 4. Update task metadata with result ----
 if [ -f "$META_FILE" ]; then
-    TMP=$(mktemp)
-    cat "$META_FILE" | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-d['exit_code'] = $EXIT_CODE
-d['completed_at'] = '$(date -Iseconds)'
-d['status'] = 'done'
-json.dump(d, sys.stdout, indent=2)
-" > "$TMP" 2>/dev/null && mv "$TMP" "$META_FILE" || rm -f "$TMP"
+    FINAL_STATUS="done"
+    [ "$EXIT_CODE" -ne 0 ] && FINAL_STATUS="failed"
+    jq --arg status "$FINAL_STATUS" \
+       --arg completed "$(date -Iseconds)" \
+       --arg exit_code "$EXIT_CODE" \
+       '.status = $status | .completed_at = $completed | .exit_code = ($exit_code | tonumber)' \
+       "$META_FILE" > "${META_FILE}.tmp" && mv "${META_FILE}.tmp" "$META_FILE"
 fi
 
-exit $EXIT_CODE
+exit "$EXIT_CODE"

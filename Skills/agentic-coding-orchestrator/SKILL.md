@@ -107,6 +107,34 @@ When the orchestrator needs to advance a step, it:
    executor session
 4. **Waits for the executor to exit**, then reads HANDOFF.md
 
+> **⚠️ CRITICAL: The prompt returned by `dispatch()` IS the CC prompt.**
+> OpenClaw (or any caller) MUST pass `dispatch().prompt` verbatim to Claude Code.
+> **NEVER** compose your own prompt like "Use agentic-coding skill to continue..." —
+> CC has no knowledge of the orchestrator and cannot interpret meta-instructions.
+>
+> **ANTI-PATTERN (causes CC to do nothing):**
+> ```
+> claude -p "Use agentic-coding skill to continue this project"
+> claude -p "Continue the orchestrator workflow for US-011"
+> claude -p "Sync project_memory and figure out what to do"
+> ```
+>
+> **CORRECT PATTERN:**
+> ```bash
+> # 1. Get the concrete prompt from orchestrator
+> PROMPT=$(orchestrator dispatch ./project)
+>
+> # 2. Pass it verbatim to CC — the prompt already contains:
+> #    - Which step to execute (e.g. "impl")
+> #    - Which files to read (e.g. docs/bdd/US-011.md, docs/sdd.md)
+> #    - What to produce (e.g. source code)
+> #    - Output rules (HANDOFF.md format, reason codes)
+> claude --dangerously-skip-permissions -p "$PROMPT"
+>
+> # Or use the dispatch script (handles meta, hooks, notifications):
+> bin/dispatch-claude-code.sh --from-orchestrator ./project
+> ```
+
 ### Dispatch Prompt Template
 
 ```
@@ -433,118 +461,142 @@ Multi-Executor collaboration specification.
 
 ## OpenClaw Integration Guide
 
-OpenClaw is the conversation layer between the human user and the orchestrator.
-OpenClaw uses a low-cost LLM to understand user intent, then decides **what to call**:
+### ★ Unified Entry: `orchestrator auto`
 
-- **Read files only** → answer from project data, zero executor cost
-- **Call orchestrator function** → deterministic, zero LLM cost
-- **Dispatch Claude Code** → high cost, only when code changes are needed
+OpenClaw 只需要呼叫**一個指令**來處理所有使用者訊息：
 
-### Decision Matrix
+```bash
+orchestrator auto <project-root> "<使用者說的話>"
+```
 
-When the user says something, OpenClaw should classify it into one of these categories:
+Orchestrator 會自動分類訊息（keyword matching，零 LLM token），路由到對應函式，
+回傳 JSON 結果。**OpenClaw 不需要自己判斷該用哪個 CLI 指令。**
 
-| User Intent | Category | What OpenClaw Does | Cost |
-|-------------|----------|-------------------|------|
-| "開啟專案 A" / "Open project A" | **Query** | `readState(projectRoot)` + read `PROJECT_MEMORY.md` → summarize current status to user | Free |
-| "繼續專案 B" / "Continue project B" | **Dispatch** | `dispatch(projectRoot)` → pipe prompt to Claude Code → `applyHandoff()` | Claude Code tokens |
-| "這專案有沒有用 framework" / "Is this project using the framework?" | **Detect** | `detectFramework(projectRoot)` → Level 0/1/2 | Free |
-| "測試狀況如何" / "How are the tests?" | **Query** | `readState(projectRoot)` → read `state.tests`, `state.failing_tests`, `state.lint_pass` | Free |
-| "還有哪些可以做" / "What's left to do?" | **Query** | Read `PROJECT_MEMORY.md` → extract NEXT section items | Free |
-| "幫我 refactor auth module" / "Refactor the auth module" | **Custom Dispatch** | `startCustom(projectRoot, instruction)` → `dispatch()` → Claude Code | Claude Code tokens |
-| "目前在哪個步驟" / "What step are we on?" | **Query** | `readState(projectRoot)` → `state.step`, `state.status`, `state.attempt` | Free |
-| "為什麼卡住了" / "Why is it blocked?" | **Query** | `readState(projectRoot)` → `state.reason`, `state.human_note`, `state.blocked_by` | Free |
-| "approve" / "核准" | **Action** | `approveReview(projectRoot, humanNote?)` | Free |
-| "reject，需要改 X" / "Reject, need to change X" | **Action** | `rejectReview(projectRoot, reason, note)` | Free |
-| "開新 story US-007" / "Start story US-007" | **Action** | `startStory(projectRoot, "US-007")` | Free |
-| "把 moment 換成 date-fns" / "Replace moment with date-fns" | **Custom Dispatch** | `startCustom(projectRoot, "Replace moment.js with date-fns")` → `dispatch()` | Claude Code tokens |
-| "列出所有專案" / "List all projects" | **Query** | `listProjects(workspaceRoot)` → lists ALL projects (framework + non-framework) | Free |
-| "專案 A 跟 B 的進度比較" / "Compare progress of A and B" | **Query** | `readState()` for both projects → compare step/status | Free |
+### 回傳格式
 
-### Classification Rules for OpenClaw LLM
+`auto` 回傳 JSON，`action` 欄位告訴 OpenClaw 發生了什麼：
 
-**CRITICAL RULE: When user mentions "Claude Code" / "CC" / "cc" / "用 CC" /
-"讓 CC 做" (case-insensitive), OpenClaw MUST use orchestrator flow. Non-negotiable,
-regardless of project state.**
-`startCustom()` and `startStory()` auto-init STATE.json if missing.
+| `action` | 意義 | OpenClaw 該做什麼 |
+|----------|------|-------------------|
+| `"query"` | 查詢結果（含 status, memory, handoff） | 翻譯成人話回覆使用者（免費） |
+| `"dispatched"` | 需要 CC 執行（含 prompt） | 把 `result.prompt` pipe 給 CC |
+| `"done"` | Story 完成 | 通知使用者 |
+| `"needs_human"` | 需要人類審核 | 顯示 review 訊息 |
+| `"blocked"` | 卡住了 | 顯示原因 |
+| `"approved"` | 已核准 | 確認已通過 |
+| `"rejected"` | 已退回 | 確認已退回 |
+| `"detected"` | 框架偵測結果 | 回報 level 0/1/2 |
+| `"listed"` | 專案列表 | 顯示專案清單 |
+| `"error"` | 錯誤 | 顯示錯誤訊息 |
 
-**AGENT TEAMS RULE: When user mentions "agent-teams" / "agents" / "平行" / "多 agent",
-set `agentTeams: true`. CC will spawn sub-agents internally within the same session —
-no extra processes needed.**
+### 使用範例
+
+```bash
+# 查詢 — 自動分類為 query，不啟動 CC
+orchestrator auto ./project "目前狀態如何"
+# → { "action": "query", "data": { "step": "impl", "status": "pass", ... }, "memory": "..." }
+
+# 繼續 — 自動分類為 dispatch，回傳具體 prompt
+orchestrator auto ./project "繼續"
+# → { "action": "dispatched", "step": "verify", "prompt": "You are executing step..." }
+
+# 自訂任務 — 自動 startCustom + dispatch
+orchestrator auto ./project "幫我把 console.log 換成 pino"
+# → { "action": "dispatched", "step": "custom", "prompt": "..." }
+
+# 核准 — 直接執行，不啟動 CC
+orchestrator auto ./project "approve"
+# → { "action": "approved" }
+
+# 開新 story — 自動 startStory + dispatch
+orchestrator auto ./project "US-011"
+# → { "action": "dispatched", "step": "bdd", "prompt": "..." }
+```
+
+### 完整 Dispatch 流程（auto 模式）
 
 ```
-IF user EXPLICITLY mentions "CC" (case-insensitive)
-   → ALWAYS use orchestrator flow:
-     1. Detect agent-teams: "agent-teams" / "agents" / "平行" / "多 agent" → agentTeams = true
-     2. startCustom(root, instruction, { agentTeams })
-        or startStory(root, id, { agentTeams })
-        (auto-creates .ai/STATE.json if missing)
-     3. dispatch(root) → get prompt + fw_lv
-     4. Pipe prompt to CC (CC spawns sub-agents internally if agentTeams = true)
-     5. applyHandoff(root) → update STATE
-   → Applies even with ZERO framework files
+User: "幫我 refactor auth module"
+  ↓
+OpenClaw: orchestrator auto ./project "幫我 refactor auth module"
+  ↓
+Orchestrator (零 token):
+  1. classify("幫我 refactor auth module") → { type: "custom" }
+  2. startCustom(root, "幫我 refactor auth module")
+  3. dispatch(root) → { action: "dispatched", prompt: "You are executing..." }
+  ↓
+OpenClaw 看到 action === "dispatched"，啟動 CC:
+  bin/dispatch-claude-code.sh -w ./project -p "$result.prompt"
+  或直接：
+  claude --dangerously-skip-permissions -p "$result.prompt"
+  ↓
+CC 執行（讀檔、寫 code、更新 HANDOFF.md）
+  ↓
+Hook fires → applyHandoff() → STATE.json 更新
+  ↓
+OpenClaw: orchestrator auto ./project "狀態如何"
+  → { action: "query", data: { status: "pass", ... } }
+  → 告訴使用者結果
+```
 
-IF user asks a QUESTION about project status, progress, tests, or history
-   → READ files (STATE.json, PROJECT_MEMORY.md, .ai/history.md)
-   → Summarize and respond
-   → DO NOT dispatch Claude Code
+### Shell Script 搭配
 
-IF user gives an INSTRUCTION that requires code changes (without mentioning Claude Code)
-   → Check if it fits a User Story (new feature with clear scope)
-     YES → startStory() + dispatch()
-     NO  → startCustom(instruction) + dispatch()
-   → Both auto-create STATE.json if needed
-   → Pipe prompt to Claude Code
-   → After exit: applyHandoff()
+`dispatch-claude-code.sh` 負責啟動 CC + 管理 metadata + hook 回調：
 
-IF user gives a COMMAND (approve, reject, start)
-   → Call the corresponding orchestrator function directly
-   → Respond with result
+```bash
+# 方法 A：先用 auto 取得 prompt，再用 dispatch 跑 CC
+RESULT=$(orchestrator auto ./project "幫我 refactor auth module")
+ACTION=$(echo "$RESULT" | jq -r '.action')
+if [ "$ACTION" = "dispatched" ]; then
+    PROMPT=$(echo "$RESULT" | jq -r '.prompt')
+    bin/dispatch-claude-code.sh -w ./project -p "$PROMPT"
+fi
 
-IF user asks about framework adoption
-   → detectFramework(projectRoot) → Level 0/1/2
+# 方法 B：用 --from-orchestrator（自動取 dispatch prompt）
+bin/dispatch-claude-code.sh --from-orchestrator ./project
+
+# Query/approve/reject 不需要 CC，直接用 auto：
+orchestrator auto ./project "目前狀態如何"
+orchestrator auto ./project "approve"
+```
+
+> **⚠️ 重要規則：**
+> - `action === "dispatched"` 時，`result.prompt` 是**完整的 CC 指令**，直接 pipe 給 CC
+> - **永遠不要自己編 prompt** 像 "Use agentic-coding skill to continue..."
+> - CC 不認識 orchestrator，它只認具體指令（哪個 step、讀哪些檔、產出什麼）
+> - 除了 `dispatched` 以外的所有 action 都不需要 CC（免費）
+
+### 分類規則（內建於 `auto.ts`）
+
+Orchestrator 用 keyword matching 自動分類，OpenClaw 不需要自己判斷：
+
+| 使用者說的話 | 分類為 | 是否啟動 CC |
+|-------------|--------|------------|
+| "狀態如何" / "what step" / "測試" / "看一下" | query | ❌ No |
+| "繼續" / "continue" / "next" / "dispatch" | continue → dispatch | ✅ Yes |
+| "approve" / "核准" / "LGTM" | approve | ❌ No |
+| "reject 不清楚" / "退回" | reject | ❌ No |
+| "US-007" / "start story US-007" | start_story → dispatch | ✅ Yes |
+| "framework" / "有沒有用" | detect | ❌ No |
+| "列出專案" / "list projects" | list | ❌ No |
+| （其他任何指令） | custom → dispatch | ✅ Yes |
+
+### 舊指令仍可用
+
+`auto` 是新的統一入口，但所有原本的 CLI 指令仍然有效：
+
+```bash
+orchestrator query ./project           # 直接查詢
+orchestrator dispatch ./project        # 直接 dispatch
+orchestrator start-custom ./project "instruction"
+orchestrator approve ./project
+orchestrator reject ./project needs_clarification "note"
 ```
 
 ### Auto-Initialization
 
-When `startStory()` or `startCustom()` is called on a project without `.ai/STATE.json`,
-the orchestrator will **automatically**:
-
-1. **Infer project name** from `package.json` → `go.mod` → directory name
-2. **Create `.ai/STATE.json`** with initial state
-3. **Proceed normally** with the requested task
-
-This means **every project in the workspace is a valid target** — the framework
-adopts itself on first use. No manual `initState()` needed.
-
-### Non-Framework Projects
-
-All query functions work on non-framework projects too:
-
-- `queryProjectStatus()` → returns `status: "not_initialized"`, `has_framework.level: 0`
-- `detectFramework()` → returns all flags as `false`, `level: 0`
-- `listProjects()` → detects ANY project (package.json, go.mod, Cargo.toml, .git, etc.)
-
-For **action** functions, auto-init kicks in:
-
-```
-User: 用 Claude Code 幫 legacy-api 做 code review
-OpenClaw: [startCustom("./legacy-api", "Code review")]
-         ↳ no STATE.json → auto-creates .ai/STATE.json for "legacy-api"
-         [dispatch() → Claude Code → applyHandoff()]
-OpenClaw: Code review 完成了，發現 8 個問題...
-
-User: 再幫我 refactor auth module
-OpenClaw: [startCustom("./legacy-api", "Refactor auth module")]
-         ↳ STATE.json already exists from previous task
-         [dispatch() → Claude Code → applyHandoff()]
-OpenClaw: Refactor 完成了...
-
-User: 打開 legacy-api
-OpenClaw: [queryProjectStatus("./legacy-api")]
-OpenClaw: legacy-api 目前在 done 步驟。上次做了 auth module refactor。
-         MEMORY 裡的 NEXT 有：...
-```
+`auto` 會自動初始化 STATE.json（如果不存在），方式同 `startStory()` / `startCustom()`。
+專案名稱從 `package.json` → `go.mod` → 目錄名推斷。任何專案都是有效目標。
 
 ### Multi-Project Management
 
@@ -588,8 +640,10 @@ language. Here's how to translate orchestrator results:
 ### Conversation Examples
 
 ```
-User: 打開我的 todo-app 專案
-OpenClaw: [reads .ai/STATE.json + PROJECT_MEMORY.md]
+User: 打開我的 todo-app 專案 / 看一下這個專案的狀態
+OpenClaw: [runs: orchestrator query ./todo-app]
+         [reads: cat ./todo-app/PROJECT_MEMORY.md]
+         ❌ Does NOT dispatch CC — this is a free query
 OpenClaw: todo-app 目前在 impl 步驟，第 2 次嘗試，狀態是 failing。
          上次的問題是 test_timeout。MEMORY 裡的 NEXT 有：
          - 完成購物車結帳流程
@@ -597,39 +651,54 @@ OpenClaw: todo-app 目前在 impl 步驟，第 2 次嘗試，狀態是 failing�
          要繼續嗎？
 
 User: 繼續
-OpenClaw: [dispatch() → Claude Code → applyHandoff()]
+OpenClaw: [runs: orchestrator dispatch ./todo-app → gets concrete prompt]
+         [runs: claude --dangerously-skip-permissions -p "$DISPATCH_PROMPT"]
+         ❌ Does NOT run: claude -p "continue the project"
+         [after CC exits: orchestrator apply-handoff ./todo-app]
 OpenClaw: impl 步驟完成了，測試 pass=12 fail=0。自動進入 verify 步驟...
          verify 也通過了，正在更新 MEMORY...
          Story US-003 完成！
 
 User: 幫我把所有 console.log 換成 structured logger
-OpenClaw: [startCustom(root, "Replace all console.log with structured logger")]
-         [dispatch() → Claude Code → applyHandoff()]
+OpenClaw: [runs: orchestrator start-custom ./todo-app "Replace all console.log with structured logger"]
+         [runs: orchestrator dispatch ./todo-app → gets concrete prompt]
+         [runs: claude --dangerously-skip-permissions -p "$DISPATCH_PROMPT"]
+         [after CC exits: orchestrator apply-handoff ./todo-app]
 OpenClaw: 完成了，改了 14 個檔案，把 console.log 都換成 pino logger。
          測試全部通過。
 
 User: 測試狀況如何？
-OpenClaw: [readState() → state.tests]
+OpenClaw: [runs: orchestrator query ./todo-app → reads tests field]
+         ❌ Does NOT dispatch CC — this is a free query
 OpenClaw: 最後一次測試：pass=47, fail=0, skip=3。lint 也通過了。
+
+User: 上次做了什麼？
+OpenClaw: [reads: cat ./todo-app/.ai/HANDOFF.md]
+         ❌ Does NOT dispatch CC — this is a free query
+OpenClaw: 上次 impl 步驟做了 auth module 的 rate limiting...
 ```
 
 ### API Surface Summary
 
-Functions OpenClaw needs to know:
+Functions and CLI commands OpenClaw needs to know:
 
-| Function | Purpose | When to Use | Works without framework? |
-|----------|---------|------------|------------------------|
-| `queryProjectStatus(root)` | Full status summary | "How's the project?" | ✅ Yes (returns `not_initialized`) |
-| `detectFramework(root)` | Check framework adoption | "Is this using framework?" | ✅ Yes (returns Level 0) |
-| `listProjects(workspace)` | List all projects | "What projects do I have?" | ✅ Yes (detects any project) |
-| `readState(root)` | Read raw STATE.json | Detailed status query | ❌ Throws if no STATE.json |
-| `initState(root, name)` | Initialize new project | "Create/init project" | ✅ Creates STATE.json |
-| `startStory(root, id)` | Begin User Story pipeline | "Start US-007" | ❌ Needs STATE.json |
-| `startCustom(root, instruction)` | Begin ad-hoc task | Any non-Story instruction | ❌ Needs STATE.json |
-| `dispatch(root)` | Get next prompt / advance | After start, or "continue" | ❌ Needs STATE.json |
-| `applyHandoff(root)` | Parse HANDOFF after executor | After Claude Code exits | ❌ Needs STATE.json |
-| `approveReview(root, note?)` | Approve review step | "Approve" / "LGTM" | ❌ Needs STATE.json |
-| `rejectReview(root, reason, note?)` | Reject review step | "Reject because..." | ❌ Needs STATE.json |
+| Function | CLI Equivalent | Purpose | Needs CC? |
+|----------|---------------|---------|-----------|
+| `queryProjectStatus(root)` | `orchestrator query ./project` | Full status summary | ❌ No (free) |
+| `detectFramework(root)` | `orchestrator detect ./project` | Framework adoption level | ❌ No (free) |
+| `listProjects(workspace)` | `orchestrator list-projects ./ws` | List all projects | ❌ No (free) |
+| `readState(root)` | `orchestrator status ./project` | Raw STATE.json | ❌ No (free) |
+| `initState(root, name)` | `orchestrator init ./project name` | Initialize project | ❌ No (free) |
+| `startStory(root, id)` | `orchestrator start-story ./project US-007` | Begin Story pipeline | ❌ No (free) |
+| `startCustom(root, inst)` | `orchestrator start-custom ./project "inst"` | Begin ad-hoc task | ❌ No (free) |
+| `dispatch(root)` | `orchestrator dispatch ./project` | Get next prompt | ❌ No (free) |
+| `applyHandoff(root)` | `orchestrator apply-handoff ./project` | Parse HANDOFF → STATE | ❌ No (free) |
+| `approveReview(root)` | `orchestrator approve ./project` | Approve review | ❌ No (free) |
+| `rejectReview(root, r)` | `orchestrator reject ./project reason` | Reject review | ❌ No (free) |
+
+> **All orchestrator operations are free (zero CC tokens).** CC is ONLY needed
+> when `dispatch()` returns `type: "dispatched"` — then pipe `dispatch().prompt`
+> to CC. Everything else (queries, actions, state changes) runs locally.
 
 Files OpenClaw can read directly (no function needed):
 
