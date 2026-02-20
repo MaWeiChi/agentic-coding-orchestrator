@@ -37,13 +37,27 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null || ech
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""' 2>/dev/null || echo "")
 EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // "unknown"' 2>/dev/null || echo "unknown")
 
+# Resolve PROJECT_ROOT: walk up from CWD to find nearest .ai/ directory.
+# This handles cases where CC's CWD is a subdirectory (e.g., web/).
+PROJECT_ROOT="$CWD"
+if [ -n "$CWD" ] && [ ! -d "${CWD}/.ai" ]; then
+    _search="$CWD"
+    while [ "$_search" != "/" ] && [ -n "$_search" ]; do
+        if [ -d "${_search}/.ai" ]; then
+            PROJECT_ROOT="$_search"
+            break
+        fi
+        _search=$(dirname "$_search")
+    done
+fi
+
 # Resolve RESULT_DIR — if already absolute (from dispatch env), use as-is;
-# otherwise resolve relative to CWD (project root).
+# otherwise resolve relative to PROJECT_ROOT.
 _RD="${RESULT_DIR:-.ai/claude-code-results}"
 if [[ "$_RD" == /* ]]; then
     RESULT_DIR="$_RD"
-elif [ -n "$CWD" ] && [ -d "$CWD" ]; then
-    RESULT_DIR="${CWD}/${_RD}"
+elif [ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT" ]; then
+    RESULT_DIR="${PROJECT_ROOT}/${_RD}"
 else
     RESULT_DIR="$_RD"
 fi
@@ -154,8 +168,8 @@ NOTIFY_TARGET=$(jq -r '.notify_target // ""' "$META_FILE" 2>/dev/null || echo ""
 OPENCLAW_BIN="${OPENCLAW_BIN:-openclaw}"
 
 build_notify_msg() {
-    local handoff_file="${CWD}/.ai/HANDOFF.md"
-    local state_file="${CWD}/.ai/STATE.json"
+    local handoff_file="${PROJECT_ROOT}/.ai/HANDOFF.md"
+    local state_file="${PROJECT_ROOT}/.ai/STATE.json"
 
     # ---- Header ----
     local status_icon="✅"
