@@ -56,8 +56,19 @@ done
 if [ -n "$FROM_ORCHESTRATOR" ]; then
     WORKDIR="$FROM_ORCHESTRATOR"
     PROMPT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
-    if [ -z "$PROMPT" ]; then
-        echo "Orchestrator returned no prompt (story may be done or needs human)" >&2
+
+    # If empty or "Already running", try apply-handoff to advance state, then retry
+    if [ -z "$PROMPT" ] || [[ "$PROMPT" == *"Already running"* ]] || [[ "$PROMPT" == *"DONE:"* ]]; then
+        echo "First dispatch returned empty/stale, attempting state advance..." >&2
+        orchestrator apply-handoff "$FROM_ORCHESTRATOR" 2>/dev/null || true
+        sleep 1
+        PROMPT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
+    fi
+
+    # Still empty after retry — genuinely done or needs human
+    if [ -z "$PROMPT" ] || [[ "$PROMPT" == *"Already running"* ]] || [[ "$PROMPT" == *"DONE:"* ]] || [[ "$PROMPT" == *"NEEDS HUMAN"* ]]; then
+        echo "Orchestrator returned no actionable prompt (story may be done or needs human)" >&2
+        echo "Last output: ${PROMPT:-<empty>}" >&2
         exit 0
     fi
 fi
@@ -70,8 +81,13 @@ fi
 # ---- 1. Write task metadata ----
 ABS_WORKDIR="$(cd "$WORKDIR" && pwd)"
 
-# Resolve RESULT_DIR relative to WORKDIR, not caller's cwd
-RESULT_DIR="${ABS_WORKDIR}/${RESULT_DIR:-.ai/claude-code-results}"
+# Resolve RESULT_DIR — if already absolute, use as-is; otherwise resolve relative to WORKDIR.
+_RD="${RESULT_DIR:-.ai/claude-code-results}"
+if [[ "$_RD" == /* ]]; then
+    RESULT_DIR="$_RD"
+else
+    RESULT_DIR="${ABS_WORKDIR}/${_RD}"
+fi
 META_FILE="${RESULT_DIR}/task-meta.json"
 TASK_OUTPUT="${RESULT_DIR}/task-output.txt"
 
@@ -131,6 +147,12 @@ if [ -f "$META_FILE" ]; then
        --arg exit_code "$EXIT_CODE" \
        '.status = $status | .completed_at = $completed | .exit_code = ($exit_code | tonumber)' \
        "$META_FILE" > "${META_FILE}.tmp" && mv "${META_FILE}.tmp" "$META_FILE"
+fi
+
+# ---- 5. Ensure HANDOFF is applied before hook fires ----
+# Prevents race: Claude writes HANDOFF → hook fires → orchestrator hasn't seen it yet
+if [ -n "$FROM_ORCHESTRATOR" ] && command -v orchestrator &>/dev/null; then
+    orchestrator apply-handoff "$ABS_WORKDIR" 2>/dev/null || true
 fi
 
 exit "$EXIT_CODE"

@@ -9,12 +9,6 @@
 
 // State
 export {
-  type State,
-  type Step,
-  type Status,
-  type Reason,
-  type TaskType,
-  type TestResult,
   createInitialState,
   readState,
   writeState,
@@ -27,14 +21,10 @@ export {
   generateClaudeMd,
   writeClaudeMd,
 } from "./state";
+export type { State, TestResults } from "./state";
 
 // Rules
 export {
-  type StepRule,
-  type FailRouting,
-  type TeamRole,
-  type TeamRoles,
-  type DispatchMode,
   STEP_RULES,
   BOOTSTRAP_RULE,
   DEFAULT_TEAM_ROLES,
@@ -45,19 +35,15 @@ export {
   getFailTarget,
   getStepSequence,
 } from "./rules";
+export type { StepRule } from "./rules";
 
 // Auto (unified entry point)
-export {
-  type AutoResult,
-  auto,
-  classify,
-} from "./auto";
+export { auto, classify } from "./auto";
 
 // Dispatch
 export {
-  type DispatchResult,
-  type HandoffResult,
   dispatch,
+  peek, // [FIX P1] New: read-only dispatch preview
   buildPrompt,
   parseHandoff,
   applyHandoff,
@@ -66,11 +52,8 @@ export {
   rejectReview,
   startStory,
   startCustom,
-  // Query functions (for OpenClaw LLM — zero executor cost)
-  type ProjectStatus,
-  type FrameworkDetection,
-  type ProjectEntry,
   detectFramework,
   queryProjectStatus,
   listProjects,
 } from "./dispatch";
+export type { DispatchResult, HandoffData } from "./dispatch";

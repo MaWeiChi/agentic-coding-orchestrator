@@ -5,100 +5,35 @@
  * All operations are synchronous file I/O — zero LLM tokens.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 
-// ─── Type Definitions ────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-/** Micro-waterfall steps, matching Protocol's valid step values */
-export type Step =
-  | "bootstrap"
-  | "bdd"
-  | "sdd-delta"
-  | "contract"
-  | "review"
-  | "scaffold"
-  | "impl"
-  | "verify"
-  | "update-memory"
-  | "custom"
-  | "done";
-
-/** Task type determines which pipeline to follow */
-export type TaskType = "story" | "custom";
-
-/** STATE.json status state machine:
- *  pending → running → pass | failing | timeout | needs_human */
-export type Status =
-  | "pending"
-  | "running"
-  | "pass"
-  | "failing"
-  | "needs_human"
-  | "timeout";
-
-/** Reason codes extracted from HANDOFF.md, driving reason-based routing */
-export type Reason =
-  | "constitution_violation"
-  | "needs_clarification"
-  | "nfr_missing"
-  | "scope_warning"
-  | "test_timeout";
-
-/** Test result summary */
-export interface TestResult {
+export interface TestResults {
   pass: number;
   fail: number;
   skip: number;
 }
 
-/** Complete STATE.json schema — every field from the Protocol spec */
 export interface State {
-  /** Project identifier */
   project: string;
-  /** Current User Story ID (e.g., "US-005") */
   story: string | null;
-
-  // ── Step tracking ──
-  /** Current micro-waterfall step */
-  step: Step;
-  /** Attempt count for current step (1-indexed) */
+  step: string;
   attempt: number;
-  /** Maximum attempts allowed (from rules table) */
   max_attempts: number;
-  /** Current status */
-  status: Status;
-  /** Failure reason code (null = general failure/success) */
-  reason: Reason | null;
-
-  // ── Timing ──
-  /** ISO 8601 timestamp when executor was dispatched */
+  status: string;
+  reason: string | null;
   dispatched_at: string | null;
-  /** ISO 8601 timestamp when executor completed */
   completed_at: string | null;
-  /** Timeout in minutes (from rules table) */
   timeout_min: number;
-
-  // ── Results ──
-  /** Test result summary */
-  tests: TestResult | null;
-  /** Names of failing tests */
+  tests: TestResults | null;
   failing_tests: string[];
-  /** Whether linting passed */
   lint_pass: boolean | null;
-  /** Files modified in this run */
   files_changed: string[];
-
-  // ── Human interaction ──
-  /** Story IDs that block this story */
   blocked_by: string[];
-  /** Human instruction transcribed from communication channel */
   human_note: string | null;
-
-  /** Task type: "story" for micro-waterfall, "custom" for ad-hoc tasks */
-  task_type: TaskType;
-
-  /** Whether CC is allowed to spawn agent-teams for this task */
+  task_type: string;
   agent_teams: boolean;
 }
 
@@ -142,7 +77,7 @@ export function readState(projectRoot: string): State {
     throw new Error(`STATE.json not found at ${path}. Run initState() first.`);
   }
   const raw = readFileSync(path, "utf-8");
-  const parsed = JSON.parse(raw) as State;
+  const parsed = JSON.parse(raw);
   validate(parsed);
   return parsed;
 }
@@ -161,7 +96,7 @@ export function writeState(projectRoot: string, state: State): void {
 /** Initialize .ai/STATE.json for a new project. No-op if already exists. */
 export function initState(
   projectRoot: string,
-  project: string
+  project: string,
 ): { created: boolean; state: State } {
   const path = statePath(projectRoot);
   if (existsSync(path)) {
@@ -235,7 +170,7 @@ micro-waterfall pipeline. You MUST follow the ACF workflow — do NOT work frees
 export function writeClaudeMd(
   projectRoot: string,
   project: string,
-  force = false
+  force = false,
 ): boolean {
   const path = claudeMdPath(projectRoot);
   if (existsSync(path) && !force) {
@@ -247,7 +182,7 @@ export function writeClaudeMd(
 
 // ─── Validation ──────────────────────────────────────────────────────────────
 
-const VALID_STEPS: Set<string> = new Set<Step>([
+const VALID_STEPS = new Set([
   "bootstrap",
   "bdd",
   "sdd-delta",
@@ -261,7 +196,7 @@ const VALID_STEPS: Set<string> = new Set<Step>([
   "done",
 ]);
 
-const VALID_STATUSES: Set<string> = new Set<Status>([
+const VALID_STATUSES = new Set([
   "pending",
   "running",
   "pass",
@@ -270,7 +205,7 @@ const VALID_STATUSES: Set<string> = new Set<Status>([
   "timeout",
 ]);
 
-const VALID_REASONS: Set<string> = new Set<Reason>([
+const VALID_REASONS = new Set([
   "constitution_violation",
   "needs_clarification",
   "nfr_missing",
@@ -284,16 +219,18 @@ export function validate(state: State): void {
     throw new Error("State.project is required");
   }
   if (!VALID_STEPS.has(state.step)) {
-    throw new Error(`Invalid step: "${state.step}". Valid: ${[...VALID_STEPS].join(", ")}`);
+    throw new Error(
+      `Invalid step: "${state.step}". Valid: ${[...VALID_STEPS].join(", ")}`,
+    );
   }
   if (!VALID_STATUSES.has(state.status)) {
     throw new Error(
-      `Invalid status: "${state.status}". Valid: ${[...VALID_STATUSES].join(", ")}`
+      `Invalid status: "${state.status}". Valid: ${[...VALID_STATUSES].join(", ")}`,
     );
   }
   if (state.reason !== null && !VALID_REASONS.has(state.reason)) {
     throw new Error(
-      `Invalid reason: "${state.reason}". Valid: null, ${[...VALID_REASONS].join(", ")}`
+      `Invalid reason: "${state.reason}". Valid: null, ${[...VALID_REASONS].join(", ")}`,
     );
   }
   if (state.attempt < 0) {
@@ -309,7 +246,8 @@ export function validate(state: State): void {
 /** Check if a step has exceeded its timeout */
 export function isTimedOut(state: State): boolean {
   if (state.status !== "running" || !state.dispatched_at) return false;
-  const elapsed = (Date.now() - new Date(state.dispatched_at).getTime()) / 60_000;
+  const elapsed =
+    (Date.now() - new Date(state.dispatched_at).getTime()) / 60_000;
   return elapsed > state.timeout_min;
 }
 
@@ -332,8 +270,8 @@ export function markRunning(state: State): State {
 /** Mark state as completed (pass or failing) with timestamp */
 export function markCompleted(
   state: State,
-  status: "pass" | "failing" | "needs_human",
-  reason: Reason | null = null
+  status: string,
+  reason: string | null = null,
 ): State {
   return {
     ...state,
