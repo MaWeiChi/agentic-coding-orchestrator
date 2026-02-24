@@ -35,8 +35,8 @@ export type DispatchResult =
   | { type: "done"; story: string; summary: string }
   | { type: "needs_human"; step: string; message: string }
   | { type: "blocked"; step: string; reason: string }
-  | { type: "already_running"; step: string; elapsed_min: number }
-  | { type: "timeout"; step: string; elapsed_min: number };
+  | { type: "already_running"; step: string; elapsed_min: number; last_error: string | null }
+  | { type: "timeout"; step: string; elapsed_min: number; last_error: string | null };
 
 // ─── Main Dispatch Function ──────────────────────────────────────────────────
 
@@ -86,8 +86,10 @@ function _dispatch(projectRoot: string, dryRun: boolean): DispatchResult {
   if (state.status === "running") {
     if (isTimedOut(state)) {
       if (!dryRun) {
+        const elapsed = elapsedMinutes(state.dispatched_at!);
         state.status = "timeout";
         state.completed_at = new Date().toISOString();
+        state.last_error = `Step "${state.step}" timed out after ${elapsed.toFixed(1)} min (limit: ${state.timeout_min} min)`;
         writeState(projectRoot, state);
       }
       const elapsed = elapsedMinutes(state.dispatched_at!);
@@ -95,6 +97,7 @@ function _dispatch(projectRoot: string, dryRun: boolean): DispatchResult {
         type: "timeout",
         step: state.step,
         elapsed_min: elapsed,
+        last_error: state.last_error,
       };
     }
     // Still running
@@ -102,6 +105,7 @@ function _dispatch(projectRoot: string, dryRun: boolean): DispatchResult {
       type: "already_running",
       step: state.step,
       elapsed_min: elapsedMinutes(state.dispatched_at!),
+      last_error: state.last_error,
     };
   }
 
@@ -125,6 +129,7 @@ function _dispatch(projectRoot: string, dryRun: boolean): DispatchResult {
     state.status = "pending";
     state.reason = null;
     state.human_note = null;
+    state.last_error = null;
     state.tests = null;
     state.failing_tests = [];
     state.lint_pass = null;
@@ -294,6 +299,23 @@ export function buildPrompt(state: State, rule: StepRule): string {
     "just updating .ai/HANDOFF.md — that is only the final bookkeeping step.",
   );
   lines.push("=========================");
+  lines.push("");
+
+  // === STEP BOUNDARY (prevent CC from doing multiple steps) ===
+  lines.push("=== STEP BOUNDARY — READ CAREFULLY ===");
+  lines.push(
+    `Your scope is ONLY the "${rule.display_name}" step. Do NOT proceed to the next step.`,
+  );
+  if (rule.next_on_pass && rule.next_on_pass !== "done") {
+    lines.push(
+      `After this step, the orchestrator will advance to "${rule.next_on_pass}" — that is NOT your job.`,
+    );
+  }
+  lines.push(
+    "When your current step is complete, write HANDOFF.md and STOP. " +
+      "Do not continue working on subsequent steps even if you know what they are.",
+  );
+  lines.push("======================================");
   lines.push("");
 
   // === POST-TASK BOOKKEEPING (only after the real work is done) ===
@@ -507,6 +529,7 @@ export function applyHandoff(projectRoot: string): State {
     state.status = "failing";
     state.reason = null;
     state.completed_at = new Date().toISOString();
+    state.last_error = `No HANDOFF.md found after executor completed step "${state.step}". Executor may have crashed or exceeded token limits.`;
     writeState(projectRoot, state);
     return state;
   }
@@ -674,9 +697,26 @@ function ensureState(projectRoot: string): State {
 export function startStory(
   projectRoot: string,
   storyId: string,
-  options: { agentTeams?: boolean } = {},
+  options: { agentTeams?: boolean; force?: boolean } = {},
 ): State {
   const state = ensureState(projectRoot);
+
+  // Guard: prevent restarting a completed story
+  if (state.story === storyId && state.step === "done" && !options.force) {
+    throw new Error(
+      `Story ${storyId} is already completed (step: "done"). ` +
+        `Use --force to restart it, or start a different story.`,
+    );
+  }
+
+  // Guard: prevent restarting a story that is currently running
+  if (state.story === storyId && state.status === "running" && !options.force) {
+    throw new Error(
+      `Story ${storyId} is currently running (step: "${state.step}"). ` +
+        `Wait for it to finish or use --force to override.`,
+    );
+  }
+
   const rule = getRule("bdd");
 
   state.story = storyId;
@@ -694,6 +734,7 @@ export function startStory(
   state.files_changed = [];
   state.blocked_by = [];
   state.human_note = null;
+  state.last_error = null;
   state.agent_teams = options.agentTeams ?? false;
 
   writeState(projectRoot, state);
@@ -796,11 +837,24 @@ export function queryProjectStatus(projectRoot: string): Record<string, unknown>
   }
 
   const state = readState(projectRoot);
+
+  // Resolve next_step so the caller knows the pipeline trajectory
+  let next_step: string | null = null;
+  try {
+    if (state.step !== "done") {
+      const rule = getRule(state.step);
+      next_step = rule.next_on_pass;
+    }
+  } catch {
+    // unknown step — leave null
+  }
+
   return {
     project: state.project,
     task_type: state.task_type,
     story: state.story,
     step: state.step,
+    next_step,
     status: state.status,
     attempt: state.attempt,
     max_attempts: state.max_attempts,
@@ -810,6 +864,7 @@ export function queryProjectStatus(projectRoot: string): Record<string, unknown>
     files_changed: state.files_changed,
     blocked_by: state.blocked_by,
     human_note: state.human_note,
+    last_error: state.last_error,
     memory_summary,
     has_framework: framework,
   };
@@ -922,6 +977,7 @@ export function startCustom(
   state.files_changed = [];
   state.blocked_by = [];
   state.human_note = instruction;
+  state.last_error = null;
   state.task_type = "custom";
   state.agent_teams = options.agentTeams ?? false;
 

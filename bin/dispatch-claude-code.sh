@@ -71,6 +71,15 @@ if [ -n "$FROM_ORCHESTRATOR" ]; then
         echo "Last output: ${PROMPT:-<empty>}" >&2
         exit 0
     fi
+
+    # Auto-generate task name from STATE if --name was not provided
+    if [[ "$TASK_NAME" == adhoc-* ]]; then
+        AUTO_STATE=$(orchestrator status "$FROM_ORCHESTRATOR" 2>/dev/null)
+        AUTO_STORY=$(echo "$AUTO_STATE" | jq -r '.story // "unknown"')
+        AUTO_STEP=$(echo "$AUTO_STATE" | jq -r '.step // "unknown"')
+        TASK_NAME="${AUTO_STORY}-${AUTO_STEP}"
+        echo "Auto task name: ${TASK_NAME}" >&2
+    fi
 fi
 
 if [ -z "$PROMPT" ]; then

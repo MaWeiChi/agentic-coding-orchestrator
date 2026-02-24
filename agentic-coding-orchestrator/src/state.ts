@@ -33,6 +33,7 @@ export interface State {
   files_changed: string[];
   blocked_by: string[];
   human_note: string | null;
+  last_error: string | null;
   task_type: string;
   agent_teams: boolean;
 }
@@ -58,6 +59,7 @@ export function createInitialState(project: string): State {
     files_changed: [],
     blocked_by: [],
     human_note: null,
+    last_error: null,
     task_type: "story",
     agent_teams: false,
   };
@@ -333,6 +335,7 @@ export function markRunning(state: State): State {
     dispatched_at: new Date().toISOString(),
     completed_at: null,
     reason: null,
+    last_error: null,
   };
 }
 

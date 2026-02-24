@@ -23,6 +23,7 @@ import {
   queryProjectStatus,
   listProjects,
 } from "./dispatch";
+import { getRule } from "./rules";
 import { readState, sanitize, writeState } from "./state";
 
 // ─── Intent Types ────────────────────────────────────────────────────────────
@@ -339,43 +340,71 @@ function wrapDispatchResult(
   result: ReturnType<typeof dispatch>,
 ): Record<string, unknown> {
   switch (result.type) {
-    case "dispatched":
+    case "dispatched": {
+      // Look up next_step so the caller knows the pipeline trajectory
+      let next_step: string | null = null;
+      try {
+        const rule = getRule(result.step);
+        next_step = rule.next_on_pass;
+      } catch {
+        // step might be "done" or unknown — leave null
+      }
       return {
         action: "dispatched",
         step: result.step,
         attempt: result.attempt,
+        next_step,
         prompt: result.prompt,
         fw_lv: result.fw_lv,
+        caller_instruction:
+          "Task has been DISPATCHED to Claude Code but is NOT yet complete. " +
+          "You MUST wait for the executor to finish (hook notification or poll 'orchestrator status'). " +
+          "Do NOT assume completion. Do NOT fabricate results. Do NOT advance to the next step.",
       };
+    }
     case "done":
       return {
         action: "done",
         story: result.story,
         summary: result.summary,
+        caller_instruction:
+          "Story is fully completed. No further dispatch is needed for this story.",
       };
     case "needs_human":
       return {
         action: "needs_human",
         step: result.step,
         message: result.message,
+        caller_instruction:
+          "This step requires human review. Present the current state to the user and wait for their approval or rejection. " +
+          "Do NOT auto-approve. Do NOT skip this step.",
       };
     case "blocked":
       return {
         action: "blocked",
         step: result.step,
         reason: result.reason,
+        caller_instruction:
+          "This step is blocked and cannot proceed. Inform the user of the blocking reason and wait for resolution.",
       };
     case "already_running":
       return {
         action: "already_running",
         step: result.step,
         elapsed_min: result.elapsed_min,
+        last_error: result.last_error,
+        caller_instruction:
+          "A task is already running for this step. Do NOT dispatch again. " +
+          "Wait for the current execution to complete before taking any action.",
       };
     case "timeout":
       return {
         action: "timeout",
         step: result.step,
         elapsed_min: result.elapsed_min,
+        last_error: result.last_error,
+        caller_instruction:
+          "The current task has timed out. Inform the user and wait for instructions on whether to retry or skip.",
       };
   }
 }

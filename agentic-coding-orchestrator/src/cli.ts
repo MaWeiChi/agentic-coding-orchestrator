@@ -16,7 +16,7 @@
 
 import { resolve } from "path";
 import { execSync } from "child_process";
-import { readState, initState, writeClaudeMd } from "./state";
+import { readState, writeState, initState, writeClaudeMd } from "./state";
 import {
   dispatch,
   peek,
@@ -160,7 +160,8 @@ try {
         console.error("Error: <story-id> is required");
         process.exit(1);
       }
-      const state = startStory(projectRoot, storyId);
+      const force = args.includes("--force");
+      const state = startStory(projectRoot, storyId, { force });
       console.log(
         `Started story ${storyId} (step: ${state.step}, attempt: ${state.attempt})`,
       );
@@ -355,6 +356,25 @@ try {
       } else {
         console.log(JSON.stringify(projects, null, 2));
       }
+      break;
+    }
+
+    case "report-error": {
+      const projectRoot = resolveRoot(args[0]);
+      const errorMsg = args[1];
+      if (!errorMsg) {
+        console.error("Error: <error-message> is required");
+        console.error(
+          'Example: orchestrator report-error . "CC session crashed: output token limit exceeded"',
+        );
+        process.exit(1);
+      }
+      const state = readState(projectRoot);
+      state.status = "failing";
+      state.completed_at = new Date().toISOString();
+      state.last_error = errorMsg;
+      writeState(projectRoot, state);
+      console.log(`Recorded error for step "${state.step}": ${errorMsg}`);
       break;
     }
 
