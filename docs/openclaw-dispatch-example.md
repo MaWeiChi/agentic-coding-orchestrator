@@ -9,38 +9,46 @@ OpenClaw 使用 agentic-coding-orchestrator (ACO) 驅動 Claude Code (CC)
 2. **OpenClaw 不自己讀 HANDOFF.md** — 等 hook 通知，避免 race condition
 3. **OpenClaw 只發一句 dispatch 確認** — 完成通知由 hook 自動發送
 4. **一個 CC session = 一個 step** — 每次都是全新 session
+5. **不要捏造結果** — `dispatched` 代表「已派發」不是「已完成」，必須等 hook 通知
+6. **遵守 `caller_instruction`** — 每個回傳都帶有明確的下一步指示，照做就好
 
 ---
 
-## 場景 1：開始新 Story
+## 場景 1：開始新 Story（推薦：--from-orchestrator）
 
 ```
 使用者: 開始 US-007
 
 OpenClaw 執行:
   1. orchestrator auto ./go-netagent "US-007"
-     → 回傳 { "action": "dispatched", "step": "bdd", "prompt": "You are executing step BDD..." }
+     → 回傳 {
+         "action": "dispatched",
+         "step": "bdd",
+         "next_step": "sdd-delta",
+         "prompt": "You are executing step BDD...",
+         "caller_instruction": "Task has been DISPATCHED but is NOT yet complete. You MUST wait..."
+       }
 
-  2. bin/dispatch-claude-code.sh \
-       -w ./go-netagent \
-       -n "US-007-BDD" \
+  2. dispatch-claude-code.sh \
+       --from-orchestrator ./go-netagent \
        -c whatsapp \
-       --notify-target "+1234567890" \
-       -p "$PROMPT"
+       --notify-target "+1234567890"
+
+     ⚡ --name 不需要傳，script 自動從 STATE 生成 "US-007-bdd"
 
 OpenClaw 回覆使用者:
-  「正在執行 US-007 BDD 步驟...」
+  「正在執行 US-007 BDD 步驟，下一步是 sdd-delta。」
 
 OpenClaw 之後的行為:
   ❌ 不要讀 .ai/HANDOFF.md
   ❌ 不要讀 .ai/STATE.json
-  ❌ 不要發「BDD 完成了！」的訊息
+  ❌ 不要發「BDD 完成了！」的訊息（你不知道結果，不要捏造）
   ✅ 靜默等待 hook 通知（WhatsApp 會自動收到）
 ```
 
 使用者會收到 hook 的 WhatsApp 通知：
 ```
-✅ US-007-BDD done
+✅ US-007-bdd done
 Story: US-007
 Step: bdd
 Status: pass
@@ -56,14 +64,18 @@ Files: docs/bdd/US-007.md
 
 OpenClaw 執行:
   1. orchestrator auto ./go-netagent "繼續"
-     → 回傳 { "action": "dispatched", "step": "sdd-delta", "prompt": "You are executing step SDD Delta..." }
+     → 回傳 {
+         "action": "dispatched",
+         "step": "sdd-delta",
+         "next_step": "contract",
+         "prompt": "You are executing step SDD Delta...",
+         "caller_instruction": "Task has been DISPATCHED but is NOT yet complete..."
+       }
 
-  2. bin/dispatch-claude-code.sh \
-       -w ./go-netagent \
-       -n "US-007-SDD-Delta" \
+  2. dispatch-claude-code.sh \
+       --from-orchestrator ./go-netagent \
        -c whatsapp \
-       --notify-target "+1234567890" \
-       -p "$PROMPT"
+       --notify-target "+1234567890"
 
 OpenClaw 回覆使用者:
   「正在執行 SDD Delta 步驟...」
@@ -80,12 +92,21 @@ OpenClaw 之後: 靜默等待 hook 通知
 
 OpenClaw 執行:
   orchestrator auto ./go-netagent "目前狀態如何"
-  → 回傳 { "action": "query", "data": { "step": "impl", "status": "pass", ... } }
+  → 回傳 {
+      "action": "query",
+      "data": {
+        "step": "impl",
+        "status": "pass",
+        "next_step": "verify",
+        "last_error": null,
+        ...
+      }
+    }
 
   ❌ 不啟動 CC — 這是免費查詢
 
 OpenClaw 回覆使用者:
-  「US-007 目前在 impl 步驟，狀態 pass。」
+  「US-007 目前在 impl 步驟，狀態 pass，下一步是 verify。」
 ```
 
 ---
@@ -97,14 +118,18 @@ OpenClaw 回覆使用者:
 
 OpenClaw 執行:
   1. orchestrator auto ./go-netagent "幫我把 console.log 換成 pino"
-     → 回傳 { "action": "dispatched", "step": "custom", "prompt": "..." }
+     → 回傳 {
+         "action": "dispatched",
+         "step": "custom",
+         "next_step": "update-memory",
+         "prompt": "...",
+         "caller_instruction": "Task has been DISPATCHED but is NOT yet complete..."
+       }
 
-  2. bin/dispatch-claude-code.sh \
-       -w ./go-netagent \
-       -n "custom-replace-logger" \
+  2. dispatch-claude-code.sh \
+       --from-orchestrator ./go-netagent \
        -c whatsapp \
-       --notify-target "+1234567890" \
-       -p "$PROMPT"
+       --notify-target "+1234567890"
 
 OpenClaw 回覆使用者:
   「正在執行自訂任務...」
@@ -142,57 +167,119 @@ OpenClaw 回覆使用者:
 
 ---
 
-## 場景 6：使用 --from-orchestrator 捷徑
-
-`dispatch-claude-code.sh` 支援 `--from-orchestrator`，會自動呼叫
-`orchestrator dispatch` 取得 prompt，省去手動兩步：
-
-```
-使用者: 繼續
-
-OpenClaw 執行:
-  bin/dispatch-claude-code.sh \
-    --from-orchestrator ./go-netagent \
-    -n "US-007-$(orchestrator status ./go-netagent | jq -r '.step')" \
-    -c whatsapp \
-    --notify-target "+1234567890"
-
-  ⚡ 一步完成：取 prompt + 啟動 CC
-
-OpenClaw 回覆使用者:
-  「正在繼續 US-007...」
-
-OpenClaw 之後: 靜默等待
-```
-
----
-
-## 場景 7：CC 完成後自動推進
+## 場景 6：CC 完成後自動推進
 
 Hook 完成後，如果 OpenClaw 想自動推進到下一步（不等使用者說「繼續」）：
 
 ```
-[Hook 通知到達: ✅ US-007-BDD done, Status: pass]
+[Hook 通知到達: ✅ US-007-bdd done, Status: pass]
 
 OpenClaw 執行:
-  1. orchestrator auto ./go-netagent "繼續"
-     → 如果回傳 "dispatched" → 自動跑下一步
-     → 如果回傳 "needs_human" → 告知使用者需要 review
-     → 如果回傳 "done" → 告知使用者 story 完成
+  dispatch-claude-code.sh \
+    --from-orchestrator ./go-netagent \
+    -c whatsapp \
+    --notify-target "+1234567890"
 
-  2. 如果是 dispatched:
-     bin/dispatch-claude-code.sh \
-       -w ./go-netagent \
-       -n "US-007-SDD-Delta" \
-       -c whatsapp \
-       --notify-target "+1234567890" \
-       -p "$PROMPT"
+  script 會自動：
+    1. orchestrator dispatch → 拿到 sdd-delta 的 prompt
+    2. orchestrator status → 自動生成 task name "US-007-sdd-delta"
+    3. 啟動 CC 執行
+    4. 等 CC 完成 → apply-handoff
 
 OpenClaw 回覆使用者:
   「BDD 通過，自動進入 SDD Delta...」（一句話）
 
 OpenClaw 之後: 靜默等待下一個 hook 通知
 ```
+
+---
+
+## 場景 7：CC crash / token 超限（錯誤處理）
+
+```
+[CC session 異常退出: API Error: output token limit exceeded]
+
+dispatch-claude-code.sh 會：
+  1. 偵測到 exit_code ≠ 0
+  2. task-meta.json status 設為 "failed"
+  3. hook 觸發 → apply-handoff 找不到 HANDOFF → STATE 標記 failing + last_error
+
+OpenClaw 查詢狀態:
+  orchestrator auto ./go-netagent "狀態"
+  → 回傳 {
+      "action": "query",
+      "data": {
+        "step": "impl",
+        "status": "failing",
+        "last_error": "No HANDOFF.md found after executor completed step \"impl\". Executor may have crashed or exceeded token limits.",
+        ...
+      }
+    }
+
+OpenClaw 回覆使用者:
+  「impl 步驟失敗了：CC 可能 crash 或超過 token 限制。要重試嗎？」
+
+外部也可以主動回報錯誤:
+  orchestrator report-error ./go-netagent "CC session crashed: output token limit exceeded"
+```
+
+---
+
+## 場景 8：已完成的 Story 被重啟（防護）
+
+```
+[US-007 已完成: step = "done"]
+
+OpenClaw 執行:
+  orchestrator auto ./go-netagent "US-007"
+  → 回傳 { "action": "error", "message": "Story US-007 is already completed (step: \"done\"). Use --force to restart it, or start a different story." }
+
+OpenClaw 回覆使用者:
+  「US-007 已經完成了。你要開新的 story，還是要強制重跑？」
+
+如果要強制重跑（僅限 CLI）:
+  orchestrator start-story ./go-netagent US-007 --force
+```
+
+---
+
+## 場景 9：任務已在執行中（防護）
+
+```
+OpenClaw 執行:
+  orchestrator auto ./go-netagent "繼續"
+  → 回傳 {
+      "action": "already_running",
+      "step": "impl",
+      "elapsed_min": 3.2,
+      "last_error": null,
+      "caller_instruction": "A task is already running. Do NOT dispatch again. Wait for the current execution to complete."
+    }
+
+OpenClaw 回覆使用者:
+  「impl 步驟正在執行中（已跑 3 分鐘），請等待完成。」
+
+  ❌ 不要再 dispatch
+```
+
+---
+
+## orchestrator auto 回傳速查
+
+| action | 意義 | OpenClaw 該做什麼 |
+|--------|------|-----------------|
+| `dispatched` | 任務已派發，CC 尚未完成 | 呼叫 `dispatch-claude-code.sh`，然後靜默等待 |
+| `done` | Story 已全部完成 | 告知使用者，不需要再 dispatch |
+| `needs_human` | 需要人工 review | 展示 review 資訊，等使用者 approve/reject |
+| `blocked` | 步驟被阻擋 | 告知使用者阻擋原因 |
+| `already_running` | CC 正在執行 | 等待，不要重複 dispatch |
+| `timeout` | CC 執行超時 | 告知使用者，等指示是否 retry |
+| `query` | 狀態查詢結果 | 顯示給使用者（免費，不啟動 CC） |
+| `approved` | Review 已核准 | 告知使用者，可以繼續 |
+| `rejected` | Review 已退回 | 告知使用者 |
+| `error` | 操作失敗 | 顯示錯誤訊息 |
+
+所有 action 都帶 `caller_instruction` 欄位（dispatched/done/needs_human/blocked/already_running/timeout），OpenClaw 應該遵守其中的指示。
 
 ---
 
@@ -203,8 +290,13 @@ OpenClaw 之後: 靜默等待下一個 hook 通知
   |                |                      |                 |             |
   |-- "開始 US-007" -->                   |                 |             |
   |                |-- orchestrator auto ->|                 |             |
-  |                |<- { dispatched, prompt }                |             |
+  |                |<- { dispatched,       |                 |             |
+  |                |    next_step,         |                 |             |
+  |                |    caller_instruction }                 |             |
+  |                |                      |                 |             |
   |                |-- dispatch-claude-code.sh ------------->|             |
+  |                |   (--from-orchestrator)                 |             |
+  |                |   (auto task name: US-007-bdd)          |             |
   |<-- "正在執行 BDD..." |                |                 |             |
   |                |    (靜默等待)         |                 |-- 執行工作 ->|
   |                |                      |                 |-- HANDOFF --|
@@ -213,7 +305,7 @@ OpenClaw 之後: 靜默等待下一個 hook 通知
   |                |                      |                 |   apply-handoff
   |                |                      |                 |   build_notify_msg
   |<============= WhatsApp 通知 =====================================|
-  |  "✅ US-007-BDD done                  |                 |             |
+  |  "✅ US-007-bdd done                  |                 |             |
   |   Story: US-007                       |                 |             |
   |   Step: bdd                           |                 |             |
   |   Status: pass"                       |                 |             |
@@ -225,25 +317,35 @@ OpenClaw 之後: 靜默等待下一個 hook 通知
 
 | ❌ 不要做 | ✅ 正確做法 |
 |-----------|-----------|
-| `claude -p "Use agentic-coding skill to continue..."` | `bin/dispatch-claude-code.sh -p "$PROMPT"` |
+| `claude -p "Use agentic-coding skill to continue..."` | `dispatch-claude-code.sh --from-orchestrator ./project` |
 | CC 退出後讀 `.ai/HANDOFF.md` | 等 hook 通知或 `pending-wake.json` |
-| CC 退出後讀 `.ai/STATE.json` | 用 `orchestrator query` 查詢 |
+| CC 退出後讀 `.ai/STATE.json` | 用 `orchestrator auto "狀態"` 查詢 |
 | 發「XX 步驟完成了，測試 pass=12...」 | 靜默 — hook 已發 WhatsApp |
 | 自己組 CC 的 prompt | 用 `orchestrator auto/dispatch` 取得完整 prompt |
 | 一個 session 跑多個 step | 每個 step 是獨立的 CC session |
+| 收到 `dispatched` 就當作完成 | `dispatched` = 已派發，不是已完成 |
+| 自己猜測/捏造完成結果 | 等 hook 通知，或查 `orchestrator auto "狀態"` |
+| 手動組 `--name` task name | 用 `--from-orchestrator`，script 自動生成 |
 
 ---
 
 ## dispatch-claude-code.sh 參數速查
 
 ```bash
-bin/dispatch-claude-code.sh \
-  -w ./project \                          # 專案目錄（必要）
-  -p "$PROMPT" \                          # CC 執行的 prompt（或用 --from-orchestrator）
-  -n "US-007-BDD" \                       # 任務名稱（顯示在通知裡）
-  -c whatsapp \                           # 通知管道
-  --notify-target "+1234567890" \        # 通知對象
-  --from-orchestrator ./project \         # 自動取 dispatch prompt（替代 -p）
-  --permission-mode plan \                # 覆蓋預設權限（預設: --dangerously-skip-permissions）
-  --allowed-tools "Read,Write,Edit,Bash"  # 限制 CC 可用工具
+# 推薦用法（最簡單）
+dispatch-claude-code.sh \
+  --from-orchestrator ./project \       # 自動取 prompt + 自動生成 task name
+  -c whatsapp \                         # 通知管道
+  --notify-target "+1234567890"       # 通知對象
+
+# 完整參數
+dispatch-claude-code.sh \
+  -w ./project \                        # 專案目錄（--from-orchestrator 時自動設定）
+  -p "$PROMPT" \                        # CC 執行的 prompt（或用 --from-orchestrator）
+  -n "US-007-BDD" \                     # 任務名稱（--from-orchestrator 時自動生成）
+  -c whatsapp \                         # 通知管道
+  --notify-target "+1234567890" \     # 通知對象
+  --from-orchestrator ./project \       # 自動取 dispatch prompt（替代 -p）
+  --permission-mode bypassPermissions \ # 覆蓋預設權限（預設: --dangerously-skip-permissions）
+  --allowed-tools "Read,Write,Edit,Bash" # 限制 CC 可用工具
 ```

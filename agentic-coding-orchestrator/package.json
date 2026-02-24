@@ -1,0 +1,21 @@
+{
+  "name": "@agentic-coding-framework/orchestrator-core",
+  "version": "0.3.1",
+  "description": "Zero-token orchestrator for the Agentic Coding Protocol — state machine, rules table, dispatch logic, CC integration",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "orchestrator": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}
