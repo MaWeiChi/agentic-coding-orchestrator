@@ -630,6 +630,15 @@ export function applyHandoff(projectRoot: string): State {
     return state;
   }
 
+  // [FIX P0] Stale HANDOFF guard: if HANDOFF.step doesn't match STATE.step,
+  // this HANDOFF is from a previous step (e.g., hook re-fires after dispatch
+  // already advanced). Applying it would overwrite the current step's status
+  // with stale data, potentially skipping steps entirely.
+  if (handoff.step && handoff.step !== state.step) {
+    // Stale HANDOFF — do not apply
+    return state;
+  }
+
   // Apply structured fields from HANDOFF
   if (handoff.status) {
     state.status = handoff.status;

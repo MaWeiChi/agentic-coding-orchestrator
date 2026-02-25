@@ -35,6 +35,8 @@ import {
   checkPrerequisites,
 } from "./dispatch";
 import { auto } from "./auto";
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
 
 const [, , command, ...args] = process.argv;
 
@@ -72,6 +74,14 @@ function resolveRoot(raw: string | undefined): string {
 
 try {
   switch (command) {
+    case "--version":
+    case "-v": {
+      const pkgPath = join(dirname(__dirname), "package.json");
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      console.log(pkg.version);
+      break;
+    }
+
     case "auto": {
       const projectRoot = resolveRoot(args[0]);
       const message = args.slice(1).join(" ");
