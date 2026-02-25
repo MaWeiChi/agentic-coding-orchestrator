@@ -450,9 +450,10 @@ Step names use **kebab-case**, matching the TypeScript implementation in
 | sdd-delta | Context, Memory, BDD, SDD, HANDOFF | docs/deltas/US-{id}.md | — | 3 |
 | contract | SDD, Delta, existing contract, HANDOFF | docs/api/openapi.yaml | — | 2 |
 | review | — | — (human step) | — | — |
-| scaffold | BDD, NFR, contract, HANDOFF | tests/ scaffolding | project-specific | 2 |
-| impl | BDD, SDD, contract, HANDOFF | source code | project-specific | 5 |
+| scaffold | BDD, NFR, contract, HANDOFF | tests/ scaffolding | project-specific | 2 | `treat_failing_as_pass: true` — RED stubs are expected, `failing` auto-normalizes to `pass` |
+| impl | BDD, SDD, contract, HANDOFF | source code | project-specific | 5 | With `--agent-teams`: spawns backend/frontend/test/verify teammates via Agent Teams |
 | verify | BDD, Delta, SDD, contract, Constitution, HANDOFF | — (check only) | — | 2 |
+| commit | Memory, HANDOFF | — (git commit only) | — | 2 | Commits code changes, records `commit_hash` in HANDOFF. Does NOT commit Memory/history. |
 | update-memory | Memory, HANDOFF (+ test results in prompt) | PROJECT_MEMORY.md, .ai/history.md | — | 2 |
 | custom | Context, Memory, SDD, Constitution, HANDOFF | * (any) | — | 3 |
 

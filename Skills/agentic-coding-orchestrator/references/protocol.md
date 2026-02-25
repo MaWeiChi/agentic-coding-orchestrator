@@ -30,7 +30,7 @@ table, fill template, write JSON.
 ```typescript
 type Step =
   | "bootstrap" | "bdd" | "sdd-delta" | "contract" | "review"
-  | "scaffold" | "impl" | "verify" | "update-memory" | "done";
+  | "scaffold" | "impl" | "verify" | "commit" | "update-memory" | "done";
 
 type Status =
   | "pending" | "running" | "pass" | "failing" | "needs_human" | "timeout";
@@ -111,7 +111,7 @@ interface StepRule {
 ### Step Chain (next_on_pass)
 
 ```
-bootstrap → bdd → sdd-delta → contract → review → scaffold → impl → verify → update-memory → done
+bootstrap → bdd → sdd-delta → contract → review → scaffold → impl → verify → commit → update-memory → done
 ```
 
 ### Reason-Based Routing (on_fail)
@@ -129,8 +129,29 @@ step instead of retrying blindly:
 | review | `constitution_violation` | sdd-delta | Redesign needed |
 | review | `scope_warning` | sdd-delta | Adjust scope |
 
-For steps not listed (bdd, sdd-delta, contract, scaffold, verify, update-memory),
+For steps not listed (bdd, sdd-delta, contract, scaffold, commit, verify, update-memory),
 `on_fail.default` points back to themselves (simple retry).
+
+### Commit Step
+
+The `commit` step runs after `verify` and before `update-memory`. The executor
+stages and commits all code changes with a conventional commit message including
+the story ID. It must NOT commit PROJECT_MEMORY.md or .ai/history.md (those are
+updated in the next step). After committing, the executor records the commit hash
+in HANDOFF.md front-matter as `commit_hash: <hash>`. This solves the chicken-and-egg
+problem: update-memory can now reference the correct commit hash.
+
+### Scaffold Semantic: `treat_failing_as_pass`
+
+The scaffold step produces RED test stubs — tests that *must* fail. The executor
+correctly reports `status: failing` in HANDOFF.md. Without special handling, the
+orchestrator would interpret this as a step failure and re-dispatch scaffold in a
+loop.
+
+Steps with `treat_failing_as_pass: true` (currently only scaffold) auto-normalize
+`failing` → `pass` **when no error reason is present** (i.e. pure RED test output).
+If the executor sets a reason like `needs_clarification`, the failing status is
+treated normally and triggers retry/routing.
 
 ### Key Functions
 
@@ -140,7 +161,7 @@ For steps not listed (bdd, sdd-delta, contract, scaffold, verify, update-memory)
 | `resolvePaths(paths, storyId)` | Replace `{story}` placeholders |
 | `getFailTarget(step, reason)` | Get target step after failure |
 | `getDispatchMode(complexity, parallelCount)` | S→single, M→auto, L→team |
-| `getStepSequence()` | Return ordered step array (8 steps) |
+| `getStepSequence()` | Return ordered step array (9 steps) |
 
 ### Complexity-Based Dispatch
 
@@ -149,7 +170,11 @@ const DISPATCH_MODES = { S: "single", M: "auto", L: "team" };
 // "auto" checks [P] count: ≥2 parallel tags → team, else single
 ```
 
-### Multi-Executor Team Roles (Optional)
+### Agent Teams — Parallel Impl (Optional)
+
+When `agent_teams: true`, the impl step uses **Claude Agent Teams** to parallelize
+work. The executing CC instance becomes the **Team Lead** and spawns teammates
+based on `DEFAULT_TEAM_ROLES`:
 
 ```typescript
 DEFAULT_TEAM_ROLES.impl = {
@@ -164,6 +189,18 @@ DEFAULT_TEAM_ROLES.impl = {
               claude_writes: [] },
 };
 ```
+
+**Flow:**
+1. Team Lead spawns backend, frontend, test, verify as Agent Team teammates
+2. Each teammate only modifies files matching their `claude_writes` scope
+3. Team Lead waits for all teammates to complete
+4. Team Lead merges results into a single HANDOFF.md
+5. Pipeline continues to verify → commit → update-memory
+
+**Requirements:**
+- Enable `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in environment
+- Use `--agent-teams` flag when starting the story
+- Each teammate gets its own context window (higher token cost)
 
 ---
 

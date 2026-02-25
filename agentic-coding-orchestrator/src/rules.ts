@@ -165,7 +165,7 @@ export const STEP_RULES: Record<string, StepRule> = {
   },
   verify: {
     display_name: "Verify (Quality Gate)",
-    next_on_pass: "update-memory",
+    next_on_pass: "commit",
     on_fail: { default: "impl" },
     max_attempts: 2,
     timeout_min: 5,
@@ -186,6 +186,26 @@ export const STEP_RULES: Record<string, StepRule> = {
       "Correctness (tests pass, NFR thresholds met), " +
       "Coherence (SDD merged Delta, contracts consistent, Constitution not violated). " +
       "Merge Delta Spec into main SDD after all checks pass.",
+  },
+  commit: {
+    display_name: "Commit Changes",
+    next_on_pass: "update-memory",
+    on_fail: { default: "commit" },
+    max_attempts: 2,
+    timeout_min: 3,
+    requires_human: false,
+    claude_reads: [
+      "PROJECT_MEMORY.md",
+      ".ai/HANDOFF.md",
+    ],
+    claude_writes: [],
+    post_check: null,
+    step_instruction:
+      "Stage and commit all code changes from this story. " +
+      "Use a conventional commit message summarizing what was done (e.g. feat:, fix:, refactor:). " +
+      "Include story ID in the commit message. " +
+      "Do NOT commit PROJECT_MEMORY.md or .ai/history.md — those are updated in the next step. " +
+      "After committing, record the commit hash in HANDOFF.md front-matter as `commit_hash: <hash>`.",
   },
   "update-memory": {
     display_name: "Update Memory",
@@ -351,6 +371,7 @@ export function getStepSequence(): string[] {
     "scaffold",
     "impl",
     "verify",
+    "commit",
     "update-memory",
   ];
 }

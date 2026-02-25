@@ -26,6 +26,7 @@ import {
   resolvePaths,
   getFailTarget,
   StepRule,
+  DEFAULT_TEAM_ROLES,
 } from "./rules";
 
 // ─── Dispatch Result Types ──────────────────────────────────────────────────
@@ -284,14 +285,63 @@ export function buildPrompt(state: State, rule: StepRule): string {
 
   // Agent-teams
   if (state.agent_teams) {
-    lines.push("=== Agent Teams ===");
-    lines.push(
-      "You may spawn sub-agents using Claude Code's agent-teams feature to parallelize this work. " +
-        "Assign sub-agents by role (e.g. backend, frontend, test) with scoped context. " +
-        "Each sub-agent should produce its own HANDOFF.md or result summary for you to merge.",
-    );
-    lines.push("===================");
-    lines.push("");
+    const teamRoles = DEFAULT_TEAM_ROLES[state.step];
+    if (teamRoles) {
+      // Structured Agent Teams: spawn teammates with specific roles
+      lines.push("=== AGENT TEAMS — PARALLEL EXECUTION ===");
+      lines.push(
+        "You are the TEAM LEAD. Create an agent team to parallelize this step. " +
+          "Spawn the following teammates, each with their scoped responsibility:",
+      );
+      lines.push("");
+
+      const storyId = state.story ?? "unknown";
+      for (const [roleName, role] of Object.entries(teamRoles)) {
+        const reads = resolvePaths(role.claude_reads, storyId).join(", ");
+        const writes = role.claude_writes.join(", ");
+        lines.push(`### Teammate: ${roleName}`);
+        lines.push(`- Reads: ${reads}`);
+        lines.push(`- Writes: ${writes}`);
+        lines.push(
+          `- Spawn prompt: "You are the ${roleName} agent for story ${storyId}. ` +
+            `Your job is to implement the ${roleName} portion of this story. ` +
+            `Read these files for context: ${reads}. ` +
+            `You may ONLY modify files matching: ${writes}. ` +
+            `Do NOT touch files outside your scope. ` +
+            `When done, send a message to the team lead with a summary of changes."`,
+        );
+        lines.push("");
+      }
+
+      lines.push("TEAM LEAD INSTRUCTIONS:");
+      lines.push(
+        "1. Spawn all teammates listed above using agent teams (NOT subagents).",
+      );
+      lines.push(
+        "2. Wait for ALL teammates to complete before proceeding.",
+      );
+      lines.push(
+        "3. Review each teammate's results. If any teammate failed, report failing in HANDOFF.md.",
+      );
+      lines.push(
+        "4. Merge all results into a single HANDOFF.md summarizing the combined work.",
+      );
+      lines.push(
+        "5. Do NOT start implementing yourself — delegate to teammates.",
+      );
+      lines.push("==========================================");
+      lines.push("");
+    } else {
+      // Generic agent teams hint for steps without defined roles
+      lines.push("=== Agent Teams ===");
+      lines.push(
+        "You may spawn sub-agents using Claude Code's agent-teams feature to parallelize this work. " +
+          "Assign sub-agents by role with scoped context. " +
+          "Each sub-agent should produce its own result summary for you to merge.",
+      );
+      lines.push("===================");
+      lines.push("");
+    }
   }
 
   // === PRIMARY TASK (this is the actual work CC must do) ===
