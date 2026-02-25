@@ -11,6 +11,8 @@
  *   apply-handoff <project-root>                Parse HANDOFF.md → update STATE
  *   approve <project-root> [note]               Approve review step
  *   reject <project-root> <reason> [note]       Reject review step
+ *   rollback <project-root> <target-step>       Roll back to a previous step [v0.6.0]
+ *   check-prereqs <project-root>                Check prerequisite files [v0.6.0]
  *   status <project-root>                       Print current STATE.json
  */
 
@@ -29,6 +31,8 @@ import {
   detectFramework,
   queryProjectStatus,
   listProjects,
+  rollback,
+  checkPrerequisites,
 } from "./dispatch";
 import { auto } from "./auto";
 
@@ -49,6 +53,8 @@ Commands:
   approve <project-root> [note]          Approve review step
   reject <project-root> <reason> [note]  Reject review step
   status <project-root>                  Print current STATE.json
+  rollback <project-root> <target-step>  Roll back to a previous step [v0.6.0]
+  check-prereqs <project-root>           Check prerequisite files for current step [v0.6.0]
   query <project-root>                   Project status summary (for OpenClaw)
   detect <project-root>                  Check if project uses the framework
   list-projects <workspace-root>         List all projects in workspace
@@ -356,6 +362,46 @@ try {
       } else {
         console.log(JSON.stringify(projects, null, 2));
       }
+      break;
+    }
+
+    // [v0.6.0] Rollback to a previous step
+    case "rollback": {
+      const projectRoot = resolveRoot(args[0]);
+      const targetStep = args[1];
+      if (!targetStep) {
+        console.error("Error: <target-step> is required");
+        console.error(
+          "Example: orchestrator rollback ./project impl",
+        );
+        process.exit(1);
+      }
+      const force = args.includes("--force");
+      const state = rollback(projectRoot, targetStep, { force });
+      console.log(
+        `Rolled back to step "${state.step}" (status: ${state.status}, attempt: ${state.attempt})`,
+      );
+      break;
+    }
+
+    // [v0.6.0] Check prerequisite files for current step
+    case "check-prereqs": {
+      const projectRoot = resolveRoot(args[0]);
+      const result = checkPrerequisites(projectRoot);
+      if (result.ok) {
+        console.log("All prerequisite files present.");
+      } else {
+        console.log(`Missing ${result.missing.length} prerequisite file(s):`);
+        for (const w of result.warnings) {
+          console.log(`  ${w}`);
+        }
+        if (result.suggested_rollback) {
+          console.log(
+            `Suggested action: orchestrator rollback . ${result.suggested_rollback}`,
+          );
+        }
+      }
+      console.log(JSON.stringify(result, null, 2));
       break;
     }
 

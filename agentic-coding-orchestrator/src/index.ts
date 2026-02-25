@@ -56,5 +56,8 @@ export {
   detectFramework,
   queryProjectStatus,
   listProjects,
+  rollback, // [v0.6.0] Rollback to previous step
+  checkPrerequisites, // [v0.6.0] Pre-dispatch file checks
+  generateChecklist, // [v0.6.0] Per-story checklist generation
 } from "./dispatch";
-export type { DispatchResult, HandoffData } from "./dispatch";
+export type { DispatchResult, HandoffData, PrereqCheckResult } from "./dispatch";

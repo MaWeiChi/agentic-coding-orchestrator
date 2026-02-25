@@ -438,6 +438,29 @@ The custom step uses the same three-file protocol, same HANDOFF format, same
 reason-based routing as Story steps. The only difference is: it skips the
 BDD → SDD → Contract → Review → Scaffold pipeline and goes straight to execution.
 
+## Rollback, Pre-Dispatch Checks, Checklist (v0.6.0)
+
+### Rollback
+
+```bash
+orchestrator rollback ./project impl          # Roll back to impl step
+orchestrator rollback ./project bdd --force   # Force rollback to bootstrap-adjacent step
+```
+
+Resets state to target step (pending, attempt 1). Validates target is earlier than current. Blocks rollback to `bootstrap` without `--force`.
+
+### Pre-Dispatch Prerequisite Checks
+
+Before each dispatch, the orchestrator checks that `claude_reads` files exist. Missing files are appended to the dispatch prompt as a WARNING section (warn-only, does not block). The warning includes a suggested rollback target.
+
+```bash
+orchestrator check-prereqs ./project   # Standalone check
+```
+
+### Checklist System
+
+`startStory()` auto-generates `.ai/CHECKLIST.md` with per-step checkbox items (BDD, SDD Delta, Contract, Review, Scaffold, Impl, Verify, Commit, Update Memory). Each dispatch prompt instructs the executor to check off completed items for the current step.
+
 ## Step Conversion Rules (Quick Reference)
 
 Step names use **kebab-case**, matching the TypeScript implementation in
@@ -714,6 +737,9 @@ Functions and CLI commands OpenClaw needs to know:
 | `applyHandoff(root)` | `orchestrator apply-handoff ./project` | Parse HANDOFF → STATE | ❌ No (free) |
 | `approveReview(root)` | `orchestrator approve ./project` | Approve review | ❌ No (free) |
 | `rejectReview(root, r)` | `orchestrator reject ./project reason` | Reject review | ❌ No (free) |
+| `rollback(root, step)` | `orchestrator rollback ./project <step>` | Roll back to earlier step | ❌ No (free) |
+| `checkPrerequisites(root)` | `orchestrator check-prereqs ./project` | Check if claude_reads files exist | ❌ No (free) |
+| `generateChecklist(root, id)` | (auto, called by startStory) | Generate .ai/CHECKLIST.md | ❌ No (free) |
 
 > **All orchestrator operations are free (zero CC tokens).** CC is ONLY needed
 > when `dispatch()` returns `type: "dispatched"` — then pipe `dispatch().prompt`

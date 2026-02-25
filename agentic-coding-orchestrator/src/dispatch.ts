@@ -10,7 +10,7 @@
  *   peek(projectRoot)      — [FIX P1] read-only dispatch preview (no mutation)
  */
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import {
   readState,
@@ -25,6 +25,7 @@ import {
   getRule,
   resolvePaths,
   getFailTarget,
+  getStepSequence,
   StepRule,
   DEFAULT_TEAM_ROLES,
 } from "./rules";
@@ -203,9 +204,31 @@ function _dispatch(projectRoot: string, dryRun: boolean): DispatchResult {
     state.status = "pending";
   }
 
+  // ── Pre-dispatch prerequisite check ──
+  const prereq = checkPrerequisites(projectRoot);
+
   // ── Dispatch executor ──
   const currentRule = getRule(state.step);
-  const prompt = buildPrompt(state, currentRule);
+  let prompt = buildPrompt(state, currentRule);
+
+  // Append prerequisite warnings to prompt if files missing
+  if (!prereq.ok) {
+    const lines: string[] = [];
+    lines.push("=== WARNING: MISSING PREREQUISITE FILES ===");
+    for (const w of prereq.warnings) {
+      lines.push(`- ${w}`);
+    }
+    if (prereq.suggested_rollback) {
+      lines.push(
+        `Suggested action: orchestrator rollback ${prereq.suggested_rollback}`,
+      );
+    }
+    lines.push("You may need to produce these files as part of your work,");
+    lines.push("or alert the human if they should have been created in a prior step.");
+    lines.push("=============================================");
+    lines.push("");
+    prompt = prompt + "\n" + lines.join("\n");
+  }
 
   if (!dryRun) {
     const running = markRunning(state);
@@ -400,6 +423,20 @@ export function buildPrompt(state: State, rule: StepRule): string {
   lines.push(
     "- If touching Non-Goals scope, set status: failing and reason: scope_warning",
   );
+  lines.push("");
+
+  // Checklist update instruction
+  lines.push("=== CHECKLIST UPDATE ===");
+  lines.push(
+    "After completing your work for this step, update .ai/CHECKLIST.md:",
+  );
+  lines.push(
+    "- Check off (replace [ ] with [x]) all items relevant to this step that you have completed.",
+  );
+  lines.push(
+    "- Do NOT check off items for future steps — only mark what you actually did.",
+  );
+  lines.push("========================");
 
   return lines.join("\n");
 }
@@ -797,6 +834,10 @@ export function startStory(
   state.agent_teams = options.agentTeams ?? false;
 
   writeState(projectRoot, state);
+
+  // Auto-generate per-story checklist
+  generateChecklist(projectRoot, storyId);
+
   return state;
 }
 
@@ -1042,6 +1083,202 @@ export function startCustom(
 
   writeState(projectRoot, state);
   return state;
+}
+
+// ─── Rollback ────────────────────────────────────────────────────────────────
+
+/**
+ * Roll back to a previous step in the pipeline.
+ * Validates the target is a valid step before the current position.
+ * Resets status to "pending", attempt to 1, clears error state.
+ */
+export function rollback(
+  projectRoot: string,
+  targetStep: string,
+  options: { force?: boolean } = {},
+): State {
+  const state = readState(projectRoot);
+  const sequence = getStepSequence();
+
+  // Validate target step exists in sequence (or is "bootstrap")
+  const targetIndex = targetStep === "bootstrap" ? -1 : sequence.indexOf(targetStep);
+  const currentIndex = state.step === "bootstrap" ? -1 : sequence.indexOf(state.step);
+
+  if (targetStep !== "bootstrap" && targetIndex === -1) {
+    throw new Error(
+      `Invalid rollback target "${targetStep}". Valid steps: bootstrap, ${sequence.join(", ")}`,
+    );
+  }
+
+  // Prevent rollback to bootstrap unless --force
+  if (targetStep === "bootstrap" && !options.force) {
+    throw new Error(
+      `Cannot rollback to "bootstrap" — it is a one-time initialization step. ` +
+        `Use --force to override.`,
+    );
+  }
+
+  // Prevent rollback to current or later step
+  if (targetIndex >= currentIndex && state.step !== "done") {
+    throw new Error(
+      `Cannot rollback to "${targetStep}" — it is at or after the current step "${state.step}". ` +
+        `Rollback must target an earlier step.`,
+    );
+  }
+
+  // Reset state
+  const rule = targetStep === "bootstrap"
+    ? getRule("bootstrap")
+    : getRule(targetStep);
+
+  state.step = targetStep;
+  state.status = "pending";
+  state.attempt = 1;
+  state.max_attempts = rule.max_attempts;
+  state.timeout_min = rule.timeout_min;
+  state.reason = null;
+  state.last_error = null;
+  state.files_changed = [];
+  state.dispatched_at = null;
+  state.completed_at = null;
+
+  writeState(projectRoot, state);
+  return state;
+}
+
+// ─── Pre-Dispatch Prerequisite Check ─────────────────────────────────────────
+
+export interface PrereqCheckResult {
+  ok: boolean;
+  missing: string[];
+  warnings: string[];
+  suggested_rollback: string | null;
+}
+
+/**
+ * Check if prerequisite files (claude_reads) exist before dispatching.
+ * Only checks concrete paths (skips wildcards like *.go, **\/*.ts).
+ * Returns warnings — does not block dispatch.
+ */
+export function checkPrerequisites(projectRoot: string): PrereqCheckResult {
+  const state = readState(projectRoot);
+
+  if (state.step === "done") {
+    return { ok: true, missing: [], warnings: [], suggested_rollback: null };
+  }
+
+  const rule = getRule(state.step);
+  const storyId = state.story ?? "unknown";
+  const resolvedPaths = resolvePaths(rule.claude_reads, storyId);
+
+  const missing: string[] = [];
+  for (const p of resolvedPaths) {
+    // Skip wildcards and globs
+    if (p.includes("*") || p.includes("?")) continue;
+    // Skip HANDOFF.md — it may not exist on first attempt
+    if (p.endsWith("HANDOFF.md") && state.attempt === 1) continue;
+
+    const fullPath = join(projectRoot, p);
+    if (!existsSync(fullPath)) {
+      missing.push(p);
+    }
+  }
+
+  if (missing.length === 0) {
+    return { ok: true, missing: [], warnings: [], suggested_rollback: null };
+  }
+
+  // Suggest which step to rollback to based on missing files
+  const warnings = missing.map(
+    (f) => `Missing prerequisite: ${f}`,
+  );
+
+  // Heuristic: suggest rollback based on what's missing
+  let suggested_rollback: string | null = null;
+  if (missing.some((f) => f.includes("bdd/"))) {
+    suggested_rollback = "bdd";
+  } else if (missing.some((f) => f.includes("deltas/"))) {
+    suggested_rollback = "sdd-delta";
+  } else if (missing.some((f) => f.includes("api/"))) {
+    suggested_rollback = "contract";
+  } else if (missing.some((f) => f.includes("sdd.md"))) {
+    suggested_rollback = "bootstrap";
+  } else if (missing.some((f) => f.includes("PROJECT_MEMORY"))) {
+    suggested_rollback = "bootstrap";
+  }
+
+  return {
+    ok: false,
+    missing,
+    warnings,
+    suggested_rollback,
+  };
+}
+
+// ─── Checklist System ────────────────────────────────────────────────────────
+
+/**
+ * Generate .ai/CHECKLIST.md for a story. Called by startStory().
+ * The checklist is a per-story progress tracker that CC must update
+ * as it completes each step.
+ */
+export function generateChecklist(projectRoot: string, storyId: string): string {
+  const checklistPath = join(projectRoot, ".ai", "CHECKLIST.md");
+  const aiDir = join(projectRoot, ".ai");
+  if (!existsSync(aiDir)) {
+    mkdirSync(aiDir, { recursive: true });
+  }
+
+  const content = `# Checklist: ${storyId}
+
+> Auto-generated by ACO. Executor MUST check off items as they are completed.
+
+## BDD
+- [ ] All scenarios written with Given/When/Then
+- [ ] All scenarios tagged with test level (@unit, @integration, @e2e, etc.)
+- [ ] Non-Goals section defined
+- [ ] Unclear items marked [NEEDS CLARIFICATION]
+
+## SDD Delta
+- [ ] Delta Spec produced (ADDED / MODIFIED / REMOVED)
+- [ ] Affected modules identified
+- [ ] Non-Goals / Out of Scope section included
+
+## API Contract
+- [ ] Affected endpoints/events updated in OpenAPI/AsyncAPI
+- [ ] Types synchronized with implementation
+
+## Review
+- [ ] Human approved BDD + Delta + Contract
+
+## Test Scaffolding
+- [ ] All BDD scenarios have corresponding test skeletons
+- [ ] All tests fail (RED) — no implementation code yet
+- [ ] NFR thresholds referenced from nfr.md
+
+## Implementation
+- [ ] All tests pass (GREEN)
+- [ ] Only affected files modified (Diff-Only)
+- [ ] No unrelated refactoring
+
+## Verify
+- [ ] Completeness: all BDD covered, all Delta items implemented
+- [ ] Correctness: all tests pass, NFR thresholds met
+- [ ] Coherence: SDD merged Delta, contracts consistent, Constitution respected
+
+## Commit
+- [ ] Code committed with conventional commit message
+- [ ] Story ID included in commit message
+- [ ] Commit hash recorded in HANDOFF.md
+
+## Update Memory
+- [ ] PROJECT_MEMORY.md updated (NOW/TESTS/NEXT/ISSUES)
+- [ ] .ai/history.md appended (DONE + LOG entry)
+- [ ] HANDOFF.md overwritten with session summary
+`;
+
+  writeFileSync(checklistPath, content, "utf-8");
+  return checklistPath;
 }
 
 // ─── Internal Helpers ────────────────────────────────────────────────────────

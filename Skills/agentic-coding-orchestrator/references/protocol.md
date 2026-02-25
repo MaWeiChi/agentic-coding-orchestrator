@@ -1,6 +1,6 @@
 # Orchestrator — Protocol Reference
 
-> Derived from: Framework Protocol v0.8 (2026-02-18)
+> Derived from: Framework Protocol v0.12 (2026-02-25)
 
 This reference maps the Agentic Coding Protocol concepts to the actual TypeScript
 implementation in `agentic-coding-orchestrator/src/`. Use this when configuring,
@@ -319,7 +319,10 @@ Post-hook equivalent. Call after executor exits:
 | `runPostCheck(projectRoot, execSync)` | Run `post_check` shell command, update `lint_pass` |
 | `approveReview(projectRoot, note?)` | Mark review as pass (human approved) |
 | `rejectReview(projectRoot, reason, note?)` | Mark review as failing with reason |
-| `startStory(projectRoot, storyId)` | Reset state for new story (step=bdd, attempt=1) |
+| `startStory(projectRoot, storyId)` | Reset state for new story (step=bdd, attempt=1); auto-generates `.ai/CHECKLIST.md` |
+| `rollback(projectRoot, targetStep, opts?)` | Roll back to earlier step (validates target, resets state to pending/attempt 1) |
+| `checkPrerequisites(projectRoot)` | Check if `claude_reads` files exist; returns `PrereqCheckResult` (warn-only) |
+| `generateChecklist(projectRoot, storyId)` | Generate `.ai/CHECKLIST.md` with per-step checkbox items |
 
 ---
 
