@@ -198,6 +198,7 @@ const VALID_STEPS = new Set([
   "scaffold",
   "impl",
   "verify",
+  "commit",
   "update-memory",
   "custom",
   "done",
