@@ -22,6 +22,12 @@ export interface StepRule {
   claude_writes: string[];
   post_check: string | null;
   step_instruction: string;
+  /**
+   * When true, a "failing" status from the executor is treated as "pass"
+   * for step advancement. Used by scaffold step where RED (failing) tests
+   * are the expected, correct output.
+   */
+  treat_failing_as_pass?: boolean;
 }
 
 /** Complexity-to-dispatch-mode mapping */
@@ -118,6 +124,7 @@ export const STEP_RULES: Record<string, StepRule> = {
     max_attempts: 2,
     timeout_min: 5,
     requires_human: false,
+    treat_failing_as_pass: true,
     claude_reads: [
       "docs/bdd/US-{story}.md",
       "docs/nfr.md",

@@ -122,6 +122,15 @@ function _dispatch(projectRoot: string, dryRun: boolean): DispatchResult {
     };
   }
 
+  // ── Scaffold semantic: "failing" = expected RED stubs = treat as pass ──
+  if (
+    state.status === "failing" &&
+    rule.treat_failing_as_pass &&
+    !state.reason // only when no error reason (pure RED test output)
+  ) {
+    state.status = "pass";
+  }
+
   // ── Success → advance to next step ──
   if (state.status === "pass") {
     state.step = rule.next_on_pass;
