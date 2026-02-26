@@ -58,15 +58,22 @@ if [ -n "$FROM_ORCHESTRATOR" ]; then
     RAW_OUTPUT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
 
     # If empty or "Already running", try apply-handoff to advance state, then retry
-    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"Already running"* ]] || [[ "$RAW_OUTPUT" == *"DONE:"* ]]; then
-        echo "First dispatch returned empty/stale, attempting state advance..." >&2
+    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"DONE:"* ]]; then
+        echo "First dispatch returned empty/done, attempting state advance..." >&2
         orchestrator apply-handoff "$FROM_ORCHESTRATOR" 2>/dev/null || true
         sleep 1
         RAW_OUTPUT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
     fi
 
-    # Still empty after retry — genuinely done or needs human
-    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"Already running"* ]] || [[ "$RAW_OUTPUT" == *"DONE:"* ]] || [[ "$RAW_OUTPUT" == *"NEEDS HUMAN"* ]]; then
+    # "Already running" — state was dispatched externally (e.g. by OpenClaw).
+    # Use peek to get the prompt without re-dispatching.
+    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"Already running"* ]]; then
+        echo "State already running, using peek to get prompt..." >&2
+        RAW_OUTPUT=$(orchestrator peek "$FROM_ORCHESTRATOR" 2>/dev/null)
+    fi
+
+    # Still empty after all retries — genuinely done or needs human
+    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"DONE:"* ]] || [[ "$RAW_OUTPUT" == *"NEEDS HUMAN"* ]]; then
         echo "Orchestrator returned no actionable prompt (story may be done or needs human)" >&2
         echo "Last output: ${RAW_OUTPUT:-<empty>}" >&2
         exit 0

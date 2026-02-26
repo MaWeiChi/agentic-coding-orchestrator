@@ -286,12 +286,22 @@ try {
       const result = peek(projectRoot);
 
       switch (result.type) {
-        case "dispatched":
+        case "dispatched": {
           console.log(result.prompt);
+          const peekMeta = {
+            task_name: `${result.story}-${result.step}`,
+            project: result.project,
+            story: result.story,
+            step: result.step,
+            attempt: result.attempt,
+            fw_lv: result.fw_lv,
+          };
+          console.log(`\n<task-meta>\n${JSON.stringify(peekMeta, null, 2)}\n</task-meta>`);
           console.error(
             `[peek] Would dispatch: step=${result.step} attempt=${result.attempt}`,
           );
           break;
+        }
         case "done":
           console.error(`[peek] DONE: ${result.summary}`);
           break;
