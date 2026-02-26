@@ -224,15 +224,26 @@ try {
       const result = dispatch(projectRoot);
 
       switch (result.type) {
-        case "dispatched":
+        case "dispatched": {
           // Print prompt to stdout (can be piped to claude -p)
           console.log(result.prompt);
-          // Print metadata to stderr so it doesn't pollute prompt
+          // Print <task-meta> JSON block to stdout — dispatch-claude-code.sh parses this
+          const taskMeta = {
+            task_name: `${result.story}-${result.step}`,
+            project: result.project,
+            story: result.story,
+            step: result.step,
+            attempt: result.attempt,
+            fw_lv: result.fw_lv,
+          };
+          console.log(`\n<task-meta>\n${JSON.stringify(taskMeta, null, 2)}\n</task-meta>`);
+          // Print metadata to stderr for human readability
           console.error(
             `[dispatch] step=${result.step} attempt=${result.attempt}`,
           );
           appendLog(projectRoot, "INFO", "cli:dispatch", `dispatched step="${result.step}" attempt=${result.attempt} fw_lv=${result.fw_lv}`);
           break;
+        }
         case "done":
           console.error(`[dispatch] DONE: ${result.summary}`);
           break;

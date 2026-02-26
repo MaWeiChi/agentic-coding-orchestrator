@@ -52,33 +52,48 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# If --from-orchestrator, use CLI to get prompt
+# If --from-orchestrator, use CLI to get prompt + <task-meta>
 if [ -n "$FROM_ORCHESTRATOR" ]; then
     WORKDIR="$FROM_ORCHESTRATOR"
-    PROMPT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
+    RAW_OUTPUT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
 
     # If empty or "Already running", try apply-handoff to advance state, then retry
-    if [ -z "$PROMPT" ] || [[ "$PROMPT" == *"Already running"* ]] || [[ "$PROMPT" == *"DONE:"* ]]; then
+    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"Already running"* ]] || [[ "$RAW_OUTPUT" == *"DONE:"* ]]; then
         echo "First dispatch returned empty/stale, attempting state advance..." >&2
         orchestrator apply-handoff "$FROM_ORCHESTRATOR" 2>/dev/null || true
         sleep 1
-        PROMPT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
+        RAW_OUTPUT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
     fi
 
     # Still empty after retry — genuinely done or needs human
-    if [ -z "$PROMPT" ] || [[ "$PROMPT" == *"Already running"* ]] || [[ "$PROMPT" == *"DONE:"* ]] || [[ "$PROMPT" == *"NEEDS HUMAN"* ]]; then
+    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"Already running"* ]] || [[ "$RAW_OUTPUT" == *"DONE:"* ]] || [[ "$RAW_OUTPUT" == *"NEEDS HUMAN"* ]]; then
         echo "Orchestrator returned no actionable prompt (story may be done or needs human)" >&2
-        echo "Last output: ${PROMPT:-<empty>}" >&2
+        echo "Last output: ${RAW_OUTPUT:-<empty>}" >&2
         exit 0
     fi
 
-    # Auto-generate task name from STATE if --name was not provided
+    # ── Parse <task-meta> JSON block from orchestrator output ──
+    TASK_META_JSON=""
+    if [[ "$RAW_OUTPUT" == *"<task-meta>"* ]]; then
+        TASK_META_JSON=$(echo "$RAW_OUTPUT" | sed -n '/<task-meta>/,/<\/task-meta>/p' | sed '/<\/*task-meta>/d')
+        # Strip <task-meta> block from prompt (claude -p gets clean prompt only)
+        PROMPT=$(echo "$RAW_OUTPUT" | sed '/<task-meta>/,/<\/task-meta>/d' | sed '/^$/N;/^\n$/d')
+    else
+        PROMPT="$RAW_OUTPUT"
+    fi
+
+    # Auto-generate task name: prefer <task-meta>, fallback to STATE query
     if [[ "$TASK_NAME" == adhoc-* ]]; then
-        AUTO_STATE=$(orchestrator status "$FROM_ORCHESTRATOR" 2>/dev/null)
-        AUTO_STORY=$(echo "$AUTO_STATE" | jq -r '.story // "unknown"')
-        AUTO_STEP=$(echo "$AUTO_STATE" | jq -r '.step // "unknown"')
-        TASK_NAME="${AUTO_STORY}-${AUTO_STEP}"
-        echo "Auto task name: ${TASK_NAME}" >&2
+        if [ -n "$TASK_META_JSON" ]; then
+            TASK_NAME=$(echo "$TASK_META_JSON" | jq -r '.task_name // "unknown"')
+            echo "Task name (from <task-meta>): ${TASK_NAME}" >&2
+        else
+            AUTO_STATE=$(orchestrator status "$FROM_ORCHESTRATOR" 2>/dev/null)
+            AUTO_STORY=$(echo "$AUTO_STATE" | jq -r '.story // "unknown"')
+            AUTO_STEP=$(echo "$AUTO_STATE" | jq -r '.step // "unknown"')
+            TASK_NAME="${AUTO_STORY}-${AUTO_STEP}"
+            echo "Task name (from STATE): ${TASK_NAME}" >&2
+        fi
     fi
 fi
 
@@ -102,7 +117,20 @@ TASK_OUTPUT="${RESULT_DIR}/task-output.txt"
 
 mkdir -p "$RESULT_DIR"
 
-cat > "$META_FILE" << METAEOF
+# Build task-meta.json — merge orchestrator <task-meta> fields when available
+if [ -n "$TASK_META_JSON" ]; then
+    # Start from orchestrator metadata, overlay runtime fields
+    echo "$TASK_META_JSON" | jq \
+        --arg tn "$TASK_NAME" \
+        --arg grp "$GROUP" \
+        --arg ch "$CHANNEL" \
+        --arg nt "$NOTIFY_TARGET" \
+        --arg wd "$ABS_WORKDIR" \
+        --arg sa "$(date -Iseconds)" \
+        '. + {task_name: $tn, group: $grp, notify_channel: $ch, notify_target: $nt, workdir: $wd, started_at: $sa, status: "running"}' \
+        > "$META_FILE"
+else
+    cat > "$META_FILE" << METAEOF
 {
   "task_name": "${TASK_NAME}",
   "group": "${GROUP}",
@@ -113,6 +141,7 @@ cat > "$META_FILE" << METAEOF
   "status": "running"
 }
 METAEOF
+fi
 
 echo "Dispatched task: ${TASK_NAME} in ${ABS_WORKDIR}" >&2
 

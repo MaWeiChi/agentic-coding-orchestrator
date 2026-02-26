@@ -35,7 +35,7 @@ import {
 // ─── Result Types ────────────────────────────────────────────────────────────
 
 export type DispatchResult =
-  | { type: "dispatched"; step: string; attempt: number; prompt: string; fw_lv: number }
+  | { type: "dispatched"; project: string | null; story: string | null; step: string; attempt: number; prompt: string; fw_lv: number }
   | { type: "done"; story: string; summary: string }
   | { type: "needs_human"; step: string; message: string }
   | { type: "blocked"; step: string; reason: string }
@@ -287,6 +287,8 @@ function _dispatchInner(projectRoot: string, state: State, dryRun: boolean): Dis
 
   return {
     type: "dispatched",
+    project: state.project,
+    story: state.story,
     step: state.step,
     attempt: state.attempt,
     prompt,
