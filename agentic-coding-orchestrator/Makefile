@@ -12,7 +12,7 @@
 # CI / pre-build: `make` (= make all) ensures tests pass before compiling.
 # ──────────────────────────────────────────────────────────────────────────────
 
-.PHONY: all test test-p0 test-p1 test-p2 test-rollback test-integ test-hooklog build clean
+.PHONY: all test test-p0 test-p1 test-p2 test-rollback test-integ test-hooklog test-cli build clean
 
 all: test build
 
@@ -22,9 +22,9 @@ all: test build
 
 test: build-quiet
 	@echo "══════════════════════════════════════════════════════════"
-	@echo "  Running ALL tests (P0 + P1 + P2 + rollback + integ + hooklog)"
+	@echo "  Running ALL tests (P0 + P1 + P2 + rollback + integ + hooklog + cli)"
 	@echo "══════════════════════════════════════════════════════════"
-	node --test test/dispatch-p0.test.js test/dispatch-p1.test.js test/dispatch-p2.test.js test/rollback.test.js test/integration-real-data.test.js test/hook-log.test.js
+	node --test test/dispatch-p0.test.js test/dispatch-p1.test.js test/dispatch-p2.test.js test/rollback.test.js test/integration-real-data.test.js test/hook-log.test.js test/cli-output.test.js
 
 test-p0: build-quiet
 	@echo "══ P0: Critical (stale HANDOFF, commit step, integration) ══"
@@ -49,6 +49,10 @@ test-integ: build-quiet
 test-hooklog: build-quiet
 	@echo "══ Hook Log: appendLog + core function logging ══"
 	node --test test/hook-log.test.js
+
+test-cli: build-quiet
+	@echo "══ CLI Output: <task-meta> in dispatch/peek stdout ══"
+	node --test test/cli-output.test.js
 
 # ─── Build ────────────────────────────────────────────────────────────────────
 

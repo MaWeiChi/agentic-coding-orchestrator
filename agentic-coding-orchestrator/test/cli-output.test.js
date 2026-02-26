@@ -193,6 +193,7 @@ describe("CLI output: peek <task-meta>", () => {
   it("peek returns <task-meta> even when state is already running", () => {
     // This is the key scenario: OpenClaw dispatched, state is running,
     // dispatch-claude-code.sh falls back to peek — peek must still work.
+    // peek skips the "already_running" guard and always generates the prompt.
     setupState(tempDir, {
       story: "US-050",
       step: "contract",
@@ -203,17 +204,26 @@ describe("CLI output: peek <task-meta>", () => {
     const { stdout } = runCli("peek", tempDir);
     const meta = extractTaskMeta(stdout);
 
-    // peek should see "already_running" — check what it outputs
-    // If peek returns already_running, it won't have <task-meta>
-    // But peek is read-only and should still produce the prompt
-    // Let's check: peek on running state returns "already_running" type
-    // This means the script's fallback to peek won't help for running state!
-    // This is actually a design question...
-    if (meta !== null) {
-      assert.equal(meta.step, "contract");
-      assert.equal(meta.story, "US-050");
-    }
-    // If meta is null, peek returned already_running — document this behavior
+    assert.notEqual(meta, null, "peek must return <task-meta> even when running");
+    assert.equal(meta.step, "contract");
+    assert.equal(meta.story, "US-050");
+    assert.equal(meta.task_name, "US-050-contract");
+  });
+
+  it("peek does not mutate running state", () => {
+    setupState(tempDir, {
+      story: "US-050",
+      step: "scaffold",
+      status: "running",
+      dispatched_at: new Date().toISOString(),
+    });
+
+    runCli("peek", tempDir);
+
+    const stateAfter = JSON.parse(
+      readFileSync(join(tempDir, ".ai", "STATE.json"), "utf-8"),
+    );
+    assert.equal(stateAfter.status, "running", "peek must not change running status");
   });
 });
 

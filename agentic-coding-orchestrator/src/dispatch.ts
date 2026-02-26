@@ -128,7 +128,7 @@ function _dispatchInner(projectRoot: string, state: State, dryRun: boolean): Dis
 
   const rule = getRule(state.step);
 
-  // ── Timeout check ──
+  // ── Running state check ──
   if (state.status === "running") {
     if (isTimedOut(state)) {
       const elapsed = elapsedMinutes(state.dispatched_at!);
@@ -146,13 +146,17 @@ function _dispatchInner(projectRoot: string, state: State, dryRun: boolean): Dis
         last_error: state.last_error,
       };
     }
-    // Still running
-    return {
-      type: "already_running",
-      step: state.step,
-      elapsed_min: elapsedMinutes(state.dispatched_at!),
-      last_error: state.last_error,
-    };
+    // Still running — real dispatch returns "already_running",
+    // but peek (dryRun) falls through to generate the prompt so
+    // dispatch-claude-code.sh can use it after external dispatch.
+    if (!dryRun) {
+      return {
+        type: "already_running",
+        step: state.step,
+        elapsed_min: elapsedMinutes(state.dispatched_at!),
+        last_error: state.last_error,
+      };
+    }
   }
 
   // ── Requires human (review checkpoint) ──
