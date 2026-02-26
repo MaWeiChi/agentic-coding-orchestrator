@@ -291,12 +291,11 @@ function handleApprove(
   projectRoot: string,
   note?: string,
 ): Record<string, unknown> {
-  try {
-    approveReview(projectRoot, note);
-    return { action: "approved", note };
-  } catch (err: unknown) {
-    return { action: "error", message: (err as Error).message };
+  const result = approveReview(projectRoot, note);
+  if (result.type === "error") {
+    return { action: "error", code: result.code, message: result.message };
   }
+  return { action: "approved", note };
 }
 
 function handleReject(
@@ -304,19 +303,21 @@ function handleReject(
   reason: string,
   note?: string,
 ): Record<string, unknown> {
-  try {
-    rejectReview(projectRoot, reason, note);
-    return { action: "rejected", reason, note };
-  } catch (err: unknown) {
-    return { action: "error", message: (err as Error).message };
+  const result = rejectReview(projectRoot, reason, note);
+  if (result.type === "error") {
+    return { action: "error", code: result.code, message: result.message };
   }
+  return { action: "rejected", reason, note };
 }
 
 function handleStartStory(
   projectRoot: string,
   storyId: string,
 ): Record<string, unknown> {
-  startStory(projectRoot, storyId);
+  const result = startStory(projectRoot, storyId);
+  if (result.type === "error") {
+    return { action: "error", code: result.code, message: result.message };
+  }
   return wrapDispatchResult(dispatch(projectRoot));
 }
 
@@ -405,6 +406,17 @@ function wrapDispatchResult(
         last_error: result.last_error,
         caller_instruction:
           "The current task has timed out. Inform the user and wait for instructions on whether to retry or skip.",
+      };
+    case "error":
+      return {
+        action: "error",
+        code: result.code,
+        message: result.message,
+        step: result.step,
+        recoverable: result.recoverable,
+        caller_instruction: result.recoverable
+          ? "An error occurred but may be recoverable. Try 'orchestrator status' to inspect STATE.json, then consider rollback or retry."
+          : "An unrecoverable error occurred. Report the error details to the human for manual resolution.",
       };
   }
 }

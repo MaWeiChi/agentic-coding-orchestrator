@@ -19,6 +19,8 @@ import {
   isTimedOut,
   isMaxedOut,
   markRunning,
+  sanitize,
+  appendLog,
   State,
 } from "./state";
 import {
@@ -30,7 +32,7 @@ import {
   DEFAULT_TEAM_ROLES,
 } from "./rules";
 
-// ─── Dispatch Result Types ──────────────────────────────────────────────────
+// ─── Result Types ────────────────────────────────────────────────────────────
 
 export type DispatchResult =
   | { type: "dispatched"; step: string; attempt: number; prompt: string; fw_lv: number }
@@ -38,7 +40,18 @@ export type DispatchResult =
   | { type: "needs_human"; step: string; message: string }
   | { type: "blocked"; step: string; reason: string }
   | { type: "already_running"; step: string; elapsed_min: number; last_error: string | null }
-  | { type: "timeout"; step: string; elapsed_min: number; last_error: string | null };
+  | { type: "timeout"; step: string; elapsed_min: number; last_error: string | null }
+  | { type: "error"; code: string; message: string; step?: string; recoverable: boolean };
+
+export type HandoffResult =
+  | { type: "applied"; state: State }
+  | { type: "stale"; state: State; message: string }
+  | { type: "missing"; state: State; message: string }
+  | { type: "error"; code: string; message: string; state?: State; recoverable: boolean };
+
+export type ActionResult =
+  | { type: "ok"; state: State; message: string }
+  | { type: "error"; code: string; message: string; recoverable: boolean };
 
 // ─── Main Dispatch Function ──────────────────────────────────────────────────
 
@@ -71,8 +84,39 @@ export function peek(projectRoot: string): DispatchResult {
 
 /** Internal dispatch implementation with optional dry-run mode */
 function _dispatch(projectRoot: string, dryRun: boolean): DispatchResult {
-  const state = readState(projectRoot);
+  let state: State;
+  try {
+    state = readState(projectRoot);
+  } catch (err) {
+    appendLog(projectRoot, "ERROR", "dispatch", `STATE_NOT_FOUND: ${(err as Error).message}`);
+    return {
+      type: "error",
+      code: "STATE_NOT_FOUND",
+      message: (err as Error).message,
+      recoverable: false,
+    };
+  }
 
+  try {
+    return _dispatchInner(projectRoot, state, dryRun);
+  } catch (err) {
+    // Catch-all: record error in state and return structured result
+    const msg = (err as Error).message;
+    state.last_error = `[dispatch] ${msg}`;
+    try { writeState(projectRoot, state); } catch { /* best effort */ }
+    appendLog(projectRoot, "CRITICAL", "dispatch", `INTERNAL_ERROR at step "${state.step}": ${msg}`);
+    return {
+      type: "error",
+      code: "INTERNAL_ERROR",
+      message: msg,
+      step: state.step,
+      recoverable: true,
+    };
+  }
+}
+
+/** Core dispatch logic, separated so _dispatch can catch all errors */
+function _dispatchInner(projectRoot: string, state: State, dryRun: boolean): DispatchResult {
   // ── Story complete ──
   if (state.step === "done") {
     return {
@@ -87,14 +131,14 @@ function _dispatch(projectRoot: string, dryRun: boolean): DispatchResult {
   // ── Timeout check ──
   if (state.status === "running") {
     if (isTimedOut(state)) {
+      const elapsed = elapsedMinutes(state.dispatched_at!);
       if (!dryRun) {
-        const elapsed = elapsedMinutes(state.dispatched_at!);
         state.status = "timeout";
         state.completed_at = new Date().toISOString();
         state.last_error = `Step "${state.step}" timed out after ${elapsed.toFixed(1)} min (limit: ${state.timeout_min} min)`;
         writeState(projectRoot, state);
+        appendLog(projectRoot, "TIMEOUT", "dispatch", `Step "${state.step}" timed out after ${elapsed.toFixed(1)}min (limit: ${state.timeout_min}min)`);
       }
-      const elapsed = elapsedMinutes(state.dispatched_at!);
       return {
         type: "timeout",
         step: state.step,
@@ -177,7 +221,10 @@ function _dispatch(projectRoot: string, dryRun: boolean): DispatchResult {
   if (state.status === "failing") {
     if (isMaxedOut(state)) {
       state.status = "needs_human";
-      if (!dryRun) writeState(projectRoot, state);
+      if (!dryRun) {
+        writeState(projectRoot, state);
+        appendLog(projectRoot, "WARN", "dispatch", `Max attempts (${state.max_attempts}) exhausted at step "${state.step}"${state.reason ? ` reason: ${state.reason}` : ""}`);
+      }
       return {
         type: "blocked",
         step: state.step,
@@ -615,9 +662,24 @@ function parseYamlList(value: string | undefined): string[] {
  * This is the TypeScript equivalent of the Protocol's post-execution hook.
  *
  * Call this after the executor process exits, before the next dispatch().
+ *
+ * Returns a structured HandoffResult so the caller (hook, LLM, CLI) can
+ * see exactly what happened — never throws.
  */
-export function applyHandoff(projectRoot: string): State {
-  const state = readState(projectRoot);
+export function applyHandoff(projectRoot: string): HandoffResult {
+  let state: State;
+  try {
+    state = readState(projectRoot);
+  } catch (err) {
+    appendLog(projectRoot, "ERROR", "applyHandoff", `STATE_NOT_FOUND: ${(err as Error).message}`);
+    return {
+      type: "error",
+      code: "STATE_NOT_FOUND",
+      message: (err as Error).message,
+      recoverable: false,
+    };
+  }
+
   const handoff = parseHandoff(projectRoot);
 
   if (!handoff) {
@@ -626,8 +688,13 @@ export function applyHandoff(projectRoot: string): State {
     state.reason = null;
     state.completed_at = new Date().toISOString();
     state.last_error = `No HANDOFF.md found after executor completed step "${state.step}". Executor may have crashed or exceeded token limits.`;
-    writeState(projectRoot, state);
-    return state;
+    try { writeState(projectRoot, state); } catch { /* best effort */ }
+    appendLog(projectRoot, "WARN", "applyHandoff", `No HANDOFF.md found after step "${state.step}" — executor may have crashed`);
+    return {
+      type: "missing",
+      state,
+      message: state.last_error,
+    };
   }
 
   // [FIX P0] Stale HANDOFF guard: if HANDOFF.step doesn't match STATE.step,
@@ -635,8 +702,12 @@ export function applyHandoff(projectRoot: string): State {
   // already advanced). Applying it would overwrite the current step's status
   // with stale data, potentially skipping steps entirely.
   if (handoff.step && handoff.step !== state.step) {
-    // Stale HANDOFF — do not apply
-    return state;
+    appendLog(projectRoot, "WARN", "applyHandoff", `Stale HANDOFF ignored: step "${handoff.step}" != state step "${state.step}"`);
+    return {
+      type: "stale",
+      state,
+      message: `HANDOFF step "${handoff.step}" does not match STATE step "${state.step}". Stale HANDOFF ignored.`,
+    };
   }
 
   // Apply structured fields from HANDOFF
@@ -668,8 +739,27 @@ export function applyHandoff(projectRoot: string): State {
     state.failing_tests = []; // could extract from body if needed
   }
 
-  writeState(projectRoot, state);
-  return state;
+  // [FIX P0] Sanitize before write — HANDOFF status may be "done"/"complete"
+  // (CC agent lifecycle status leaking into ACO status field).
+  // Without this, writeState → validate() throws and the pipeline stalls.
+  sanitize(state, projectRoot);
+
+  try {
+    writeState(projectRoot, state);
+  } catch (err) {
+    state.last_error = `[applyHandoff] Failed to write STATE after applying HANDOFF: ${(err as Error).message}`;
+    appendLog(projectRoot, "CRITICAL", "applyHandoff", `STATE_CORRUPTION: ${state.last_error}`);
+    return {
+      type: "error",
+      code: "STATE_CORRUPTION",
+      message: state.last_error,
+      state,
+      recoverable: true,
+    };
+  }
+
+  appendLog(projectRoot, "INFO", "applyHandoff", `Applied HANDOFF: step="${state.step}" status="${state.status}"${state.tests ? ` tests=${state.tests.pass}/${state.tests.fail}/${state.tests.skip}` : ""}`);
+  return { type: "applied", state };
 }
 
 // ─── Post-Check Runner ───────────────────────────────────────────────────────
@@ -714,16 +804,25 @@ export function runPostCheck(
 export function approveReview(
   projectRoot: string,
   humanNote?: string,
-): void {
-  const state = readState(projectRoot);
+): ActionResult {
+  let state: State;
+  try { state = readState(projectRoot); } catch (err) {
+    return { type: "error", code: "STATE_NOT_FOUND", message: (err as Error).message, recoverable: false };
+  }
   if (state.step !== "review") {
-    throw new Error(
-      `Cannot approve review: current step is "${state.step}", not "review"`,
-    );
+    appendLog(projectRoot, "ERROR", "approve", `WRONG_STEP: current step is "${state.step}", not "review"`);
+    return {
+      type: "error",
+      code: "WRONG_STEP",
+      message: `Cannot approve review: current step is "${state.step}", not "review"`,
+      recoverable: false,
+    };
   }
   state.status = "pass";
   state.human_note = humanNote ?? null;
   writeState(projectRoot, state);
+  appendLog(projectRoot, "INFO", "approve", `Review approved for story "${state.story}"${humanNote ? ` note: "${humanNote}"` : ""}`);
+  return { type: "ok", state, message: `Review approved${humanNote ? ` (note: "${humanNote}")` : ""}` };
 }
 
 /**
@@ -733,17 +832,26 @@ export function rejectReview(
   projectRoot: string,
   reason: string,
   humanNote?: string,
-): void {
-  const state = readState(projectRoot);
+): ActionResult {
+  let state: State;
+  try { state = readState(projectRoot); } catch (err) {
+    return { type: "error", code: "STATE_NOT_FOUND", message: (err as Error).message, recoverable: false };
+  }
   if (state.step !== "review") {
-    throw new Error(
-      `Cannot reject review: current step is "${state.step}", not "review"`,
-    );
+    appendLog(projectRoot, "ERROR", "reject", `WRONG_STEP: current step is "${state.step}", not "review"`);
+    return {
+      type: "error",
+      code: "WRONG_STEP",
+      message: `Cannot reject review: current step is "${state.step}", not "review"`,
+      recoverable: false,
+    };
   }
   state.status = "failing";
   state.reason = reason;
   state.human_note = humanNote ?? null;
   writeState(projectRoot, state);
+  appendLog(projectRoot, "INFO", "reject", `Review rejected for story "${state.story}" reason: ${reason}`);
+  return { type: "ok", state, message: `Review rejected (reason: ${reason})` };
 }
 
 // ─── Auto-Init Helper ────────────────────────────────────────────────────────
@@ -803,23 +911,34 @@ export function startStory(
   projectRoot: string,
   storyId: string,
   options: { agentTeams?: boolean; force?: boolean } = {},
-): State {
-  const state = ensureState(projectRoot);
+): ActionResult {
+  let state: State;
+  try {
+    state = ensureState(projectRoot);
+  } catch (err) {
+    return { type: "error", code: "STATE_NOT_FOUND", message: (err as Error).message, recoverable: false };
+  }
 
   // Guard: prevent restarting a completed story
   if (state.story === storyId && state.step === "done" && !options.force) {
-    throw new Error(
-      `Story ${storyId} is already completed (step: "done"). ` +
-        `Use --force to restart it, or start a different story.`,
-    );
+    appendLog(projectRoot, "WARN", "startStory", `Story ${storyId} already completed (step: done)`);
+    return {
+      type: "error",
+      code: "ALREADY_COMPLETED",
+      message: `Story ${storyId} is already completed (step: "done"). Use --force to restart it, or start a different story.`,
+      recoverable: false,
+    };
   }
 
   // Guard: prevent restarting a story that is currently running
   if (state.story === storyId && state.status === "running" && !options.force) {
-    throw new Error(
-      `Story ${storyId} is currently running (step: "${state.step}"). ` +
-        `Wait for it to finish or use --force to override.`,
-    );
+    appendLog(projectRoot, "WARN", "startStory", `Story ${storyId} already running (step: ${state.step})`);
+    return {
+      type: "error",
+      code: "ALREADY_RUNNING",
+      message: `Story ${storyId} is currently running (step: "${state.step}"). Wait for it to finish or use --force to override.`,
+      recoverable: false,
+    };
   }
 
   const rule = getRule("bdd");
@@ -847,7 +966,8 @@ export function startStory(
   // Auto-generate per-story checklist
   generateChecklist(projectRoot, storyId);
 
-  return state;
+  appendLog(projectRoot, "INFO", "startStory", `Started story ${storyId} at bdd step`);
+  return { type: "ok", state, message: `Started story ${storyId} at bdd step` };
 }
 
 /**
@@ -1067,7 +1187,7 @@ export function startCustom(
   projectRoot: string,
   instruction: string,
   options: { label?: string; agentTeams?: boolean } = {},
-): State {
+): ActionResult {
   const state = ensureState(projectRoot);
   const rule = getRule("custom");
 
@@ -1091,7 +1211,8 @@ export function startCustom(
   state.agent_teams = options.agentTeams ?? false;
 
   writeState(projectRoot, state);
-  return state;
+  appendLog(projectRoot, "INFO", "startCustom", `Custom task "${state.story}" started: "${instruction}"`);
+  return { type: "ok", state, message: `Custom task '${state.story}' started` };
 }
 
 // ─── Rollback ────────────────────────────────────────────────────────────────
@@ -1105,8 +1226,14 @@ export function rollback(
   projectRoot: string,
   targetStep: string,
   options: { force?: boolean } = {},
-): State {
-  const state = readState(projectRoot);
+): ActionResult {
+  let state: State;
+  try {
+    state = readState(projectRoot);
+  } catch (err) {
+    return { type: "error", code: "STATE_NOT_FOUND", message: (err as Error).message, recoverable: false };
+  }
+
   const sequence = getStepSequence();
 
   // Validate target step exists in sequence (or is "bootstrap")
@@ -1114,28 +1241,39 @@ export function rollback(
   const currentIndex = state.step === "bootstrap" ? -1 : sequence.indexOf(state.step);
 
   if (targetStep !== "bootstrap" && targetIndex === -1) {
-    throw new Error(
-      `Invalid rollback target "${targetStep}". Valid steps: bootstrap, ${sequence.join(", ")}`,
-    );
+    appendLog(projectRoot, "ERROR", "rollback", `INVALID_TARGET: "${targetStep}"`);
+    return {
+      type: "error",
+      code: "INVALID_TARGET",
+      message: `Invalid rollback target "${targetStep}". Valid steps: bootstrap, ${sequence.join(", ")}`,
+      recoverable: false,
+    };
   }
 
   // Prevent rollback to bootstrap unless --force
   if (targetStep === "bootstrap" && !options.force) {
-    throw new Error(
-      `Cannot rollback to "bootstrap" — it is a one-time initialization step. ` +
-        `Use --force to override.`,
-    );
+    appendLog(projectRoot, "ERROR", "rollback", `BOOTSTRAP_NEEDS_FORCE: rollback to bootstrap without --force`);
+    return {
+      type: "error",
+      code: "BOOTSTRAP_NEEDS_FORCE",
+      message: `Cannot rollback to "bootstrap" — it is a one-time initialization step. Use --force to override.`,
+      recoverable: false,
+    };
   }
 
   // Prevent rollback to current or later step
   if (targetIndex >= currentIndex && state.step !== "done") {
-    throw new Error(
-      `Cannot rollback to "${targetStep}" — it is at or after the current step "${state.step}". ` +
-        `Rollback must target an earlier step.`,
-    );
+    appendLog(projectRoot, "ERROR", "rollback", `ROLLBACK_FORWARD: "${targetStep}" is at/after current step "${state.step}"`);
+    return {
+      type: "error",
+      code: "ROLLBACK_FORWARD",
+      message: `Cannot rollback to "${targetStep}" — it is at or after the current step "${state.step}". Rollback must target an earlier step.`,
+      recoverable: false,
+    };
   }
 
   // Reset state
+  const previousStep = state.step;
   const rule = targetStep === "bootstrap"
     ? getRule("bootstrap")
     : getRule(targetStep);
@@ -1150,9 +1288,19 @@ export function rollback(
   state.files_changed = [];
   state.dispatched_at = null;
   state.completed_at = null;
+  // [FIX P1] Clear stale test data — without this, old test results
+  // from a later step carry over and pollute the rollback target step.
+  state.tests = null;
+  state.failing_tests = [];
+  state.lint_pass = null;
 
   writeState(projectRoot, state);
-  return state;
+  appendLog(projectRoot, "INFO", "rollback", `Rolled back from "${previousStep}" to "${targetStep}"`);
+  return {
+    type: "ok",
+    state,
+    message: `Rolled back to "${targetStep}" (attempt 1, status: pending)`,
+  };
 }
 
 // ─── Pre-Dispatch Prerequisite Check ─────────────────────────────────────────

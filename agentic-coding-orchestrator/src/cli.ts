@@ -18,7 +18,7 @@
 
 import { resolve } from "path";
 import { execSync } from "child_process";
-import { readState, writeState, initState, writeClaudeMd } from "./state";
+import { readState, writeState, initState, writeClaudeMd, appendLog } from "./state";
 import {
   dispatch,
   peek,
@@ -177,7 +177,13 @@ try {
         process.exit(1);
       }
       const force = args.includes("--force");
-      const state = startStory(projectRoot, storyId, { force });
+      const result = startStory(projectRoot, storyId, { force });
+      if (result.type === "error") {
+        console.log(JSON.stringify(result, null, 2));
+        console.error(`[start-story] ERROR (${result.code}): ${result.message}`);
+        process.exit(1);
+      }
+      const state = result.state;
       console.log(
         `Started story ${storyId} (step: ${state.step}, attempt: ${state.attempt})`,
       );
@@ -196,13 +202,19 @@ try {
       }
       const label = args[2] || undefined; // optional label
       const agentTeams = args[3] === "--agent-teams";
-      const state = startCustom(projectRoot, instruction, {
+      const customResult = startCustom(projectRoot, instruction, {
         label,
         agentTeams,
       });
+      if (customResult.type === "error") {
+        console.log(JSON.stringify(customResult, null, 2));
+        console.error(`[start-custom] ERROR (${customResult.code}): ${customResult.message}`);
+        process.exit(customResult.recoverable ? 2 : 1);
+      }
+      const customState = customResult.state;
       console.log(`Started custom task: "${instruction}"`);
       console.log(
-        `  label: ${state.story}, step: ${state.step}, task_type: ${state.task_type}`,
+        `  label: ${customState.story}, step: ${customState.step}, task_type: ${customState.task_type}`,
       );
       break;
     }
@@ -219,6 +231,7 @@ try {
           console.error(
             `[dispatch] step=${result.step} attempt=${result.attempt}`,
           );
+          appendLog(projectRoot, "INFO", "cli:dispatch", `dispatched step="${result.step}" attempt=${result.attempt} fw_lv=${result.fw_lv}`);
           break;
         case "done":
           console.error(`[dispatch] DONE: ${result.summary}`);
@@ -245,6 +258,12 @@ try {
           // [FIX P1] Use exit(0) — timeout is an expected orchestrator state.
           // exit(1) would abort dispatch-claude-code.sh before it can retry.
           process.exit(0);
+          break;
+        case "error":
+          console.log(JSON.stringify(result, null, 2));
+          console.error(`[dispatch] ERROR (${result.code}): ${result.message}`);
+          appendLog(projectRoot, "ERROR", "cli:dispatch", `exit=${result.recoverable ? 2 : 1} code=${result.code} ${result.message}`);
+          process.exit(result.recoverable ? 2 : 1);
           break;
       }
       break;
@@ -277,6 +296,10 @@ try {
             `[peek] Already running (${result.elapsed_min} min)`,
           );
           break;
+        case "error":
+          console.log(JSON.stringify(result, null, 2));
+          console.error(`[peek] ERROR (${result.code}): ${result.message}`);
+          break;
         case "timeout":
           console.error(
             `[peek] TIMEOUT at ${result.step} (${result.elapsed_min} min)`,
@@ -288,13 +311,22 @@ try {
 
     case "apply-handoff": {
       const projectRoot = resolveRoot(args[0]);
-      const state = applyHandoff(projectRoot);
-      console.log(
-        `Applied HANDOFF → step: ${state.step}, status: ${state.status}, reason: ${state.reason ?? "(none)"}`,
-      );
-      if (state.tests) {
-        console.log(
-          `  tests: pass=${state.tests.pass} fail=${state.tests.fail} skip=${state.tests.skip}`,
+      const result = applyHandoff(projectRoot);
+      console.log(JSON.stringify(result, null, 2));
+      if (result.type === "error") {
+        console.error(`[apply-handoff] ERROR (${result.code}): ${result.message}`);
+        process.exit(result.recoverable ? 2 : 1);
+      }
+      if (result.type === "stale") {
+        console.error(`[apply-handoff] STALE: ${result.message}`);
+      }
+      if (result.type === "missing") {
+        console.error(`[apply-handoff] MISSING: ${result.message}`);
+      }
+      if (result.type === "applied") {
+        const s = result.state;
+        console.error(
+          `[apply-handoff] Applied → step: ${s.step}, status: ${s.status}, reason: ${s.reason ?? "(none)"}`,
         );
       }
       break;
@@ -311,10 +343,13 @@ try {
     case "approve": {
       const projectRoot = resolveRoot(args[0]);
       const note = args[1] || undefined;
-      approveReview(projectRoot, note);
-      console.log(
-        `Review approved${note ? ` (note: "${note}")` : ""}`,
-      );
+      const approveResult = approveReview(projectRoot, note);
+      if (approveResult.type === "error") {
+        console.log(JSON.stringify(approveResult, null, 2));
+        console.error(`[approve] ERROR (${approveResult.code}): ${approveResult.message}`);
+        process.exit(1);
+      }
+      console.log(approveResult.message);
       break;
     }
 
@@ -328,10 +363,13 @@ try {
         process.exit(1);
       }
       const note = args[2] || undefined;
-      rejectReview(projectRoot, reason, note);
-      console.log(
-        `Review rejected (reason: ${reason}${note ? `, note: "${note}"` : ""})`,
-      );
+      const rejectResult = rejectReview(projectRoot, reason, note);
+      if (rejectResult.type === "error") {
+        console.log(JSON.stringify(rejectResult, null, 2));
+        console.error(`[reject] ERROR (${rejectResult.code}): ${rejectResult.message}`);
+        process.exit(1);
+      }
+      console.log(rejectResult.message);
       break;
     }
 
@@ -387,9 +425,15 @@ try {
         process.exit(1);
       }
       const force = args.includes("--force");
-      const state = rollback(projectRoot, targetStep, { force });
+      const rollbackResult = rollback(projectRoot, targetStep, { force });
+      if (rollbackResult.type === "error") {
+        console.log(JSON.stringify(rollbackResult, null, 2));
+        console.error(`[rollback] ERROR (${rollbackResult.code}): ${rollbackResult.message}`);
+        process.exit(1);
+      }
+      const rbState = rollbackResult.state;
       console.log(
-        `Rolled back to step "${state.step}" (status: ${state.status}, attempt: ${state.attempt})`,
+        `Rolled back to step "${rbState.step}" (status: ${rbState.status}, attempt: ${rbState.attempt})`,
       );
       break;
     }
@@ -430,6 +474,7 @@ try {
       state.completed_at = new Date().toISOString();
       state.last_error = errorMsg;
       writeState(projectRoot, state);
+      appendLog(projectRoot, "ERROR", "cli:report-error", `step="${state.step}" ${errorMsg}`);
       console.log(`Recorded error for step "${state.step}": ${errorMsg}`);
       break;
     }
@@ -441,6 +486,9 @@ try {
       usage();
   }
 } catch (err: unknown) {
-  console.error(`Error: ${(err as Error).message}`);
-  process.exit(1);
+  // Safety net — ideally never reached after structured error refactor
+  const msg = (err as Error).message;
+  console.log(JSON.stringify({ type: "error", code: "INTERNAL_ERROR", message: msg }, null, 2));
+  console.error(`[INTERNAL] ${msg}`);
+  process.exit(127);
 }

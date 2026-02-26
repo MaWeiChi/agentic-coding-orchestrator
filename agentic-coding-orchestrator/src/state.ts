@@ -80,7 +80,7 @@ export function readState(projectRoot: string): State {
   }
   const raw = readFileSync(path, "utf-8");
   const parsed = JSON.parse(raw);
-  const warnings = sanitize(parsed);
+  const warnings = sanitize(parsed, projectRoot);
   validate(parsed);
   // If sanitize corrected anything, persist the fix so next read is clean
   if (warnings.length > 0) {
@@ -112,6 +112,33 @@ export function initState(
   const state = createInitialState(project);
   writeState(projectRoot, state);
   return { created: true, state };
+}
+
+// ─── Hook Log ────────────────────────────────────────────────────────────────
+
+export type LogLevel = "ERROR" | "WARN" | "INFO" | "CRITICAL" | "TIMEOUT";
+
+/**
+ * Append a timestamped line to .ai/hook.log (best-effort, never throws).
+ * If .ai/ directory doesn't exist, silently skips.
+ */
+export function appendLog(
+  projectRoot: string,
+  level: LogLevel,
+  context: string,
+  message: string,
+): void {
+  try {
+    const logPath = join(projectRoot, ".ai", "hook.log");
+    const ts = new Date().toISOString();
+    const line = `${ts} [${level}] [${context}] ${message}\n`;
+    // Append: read existing content + append new line
+    let existing = "";
+    try { existing = readFileSync(logPath, "utf-8"); } catch { /* file may not exist */ }
+    writeFileSync(logPath, existing + line, "utf-8");
+  } catch {
+    // best-effort — if .ai/ doesn't exist yet, silently skip
+  }
 }
 
 // ─── CLAUDE.md Generation ─────────────────────────────────────────────────
@@ -227,6 +254,9 @@ const VALID_REASONS = new Set([
 const STATUS_TYPO_MAP: Record<string, string> = {
   passing: "pass",
   passed: "pass",
+  done: "pass",       // [FIX] CC agent / hook writes "done" (task lifecycle status, not ACO status)
+  complete: "pass",   // [FIX] Executor sometimes writes "complete" instead of "pass"
+  completed: "pass",  // [FIX] Same pattern — "completed" is not a valid ACO status
   failed: "failing",
   fail: "failing",
   failure: "failing",
@@ -241,7 +271,7 @@ const STATUS_TYPO_MAP: Record<string, string> = {
  * Auto-corrects known typos in `status` and cleans up invalid `reason`.
  * Returns an array of warning messages (empty if nothing was corrected).
  */
-export function sanitize(state: State): string[] {
+export function sanitize(state: State, projectRoot?: string): string[] {
   const warnings: string[] = [];
 
   // ── Status auto-correct ──
@@ -278,6 +308,11 @@ export function sanitize(state: State): string[] {
 
   if (warnings.length > 0) {
     console.error(warnings.join("\n"));
+    if (projectRoot) {
+      for (const w of warnings) {
+        appendLog(projectRoot, "WARN", "sanitize", w);
+      }
+    }
   }
 
   return warnings;
