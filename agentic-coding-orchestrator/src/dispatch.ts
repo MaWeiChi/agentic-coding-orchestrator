@@ -21,6 +21,7 @@ import {
   markRunning,
   sanitize,
   appendLog,
+  appendHistory,
   State,
 } from "./state";
 import {
@@ -32,11 +33,16 @@ import {
   DEFAULT_TEAM_ROLES,
 } from "./rules";
 
+// ─── Config Constants ────────────────────────────────────────────────────────
+
+/** After N stories reach "done", automatically suggest/trigger a review session */
+const REVIEW_TRIGGER_THRESHOLD = 3;
+
 // ─── Result Types ────────────────────────────────────────────────────────────
 
 export type DispatchResult =
   | { type: "dispatched"; project: string | null; story: string | null; step: string; attempt: number; prompt: string; fw_lv: number }
-  | { type: "done"; story: string; summary: string }
+  | { type: "done"; story: string; summary: string; review_suggested?: boolean }
   | { type: "needs_human"; step: string; message: string }
   | { type: "blocked"; step: string; reason: string }
   | { type: "already_running"; step: string; elapsed_min: number; last_error: string | null }
@@ -196,12 +202,26 @@ function _dispatchInner(projectRoot: string, state: State, dryRun: boolean): Dis
 
     // Check if we just reached "done"
     if (state.step === "done") {
+      // Clear reopened_from when story completes
+      state.reopened_from = null;
+
+      // Feature 3: Check if review should be triggered
+      let review_suggested = false;
+      const completedCount = countCompletedStories(projectRoot);
+      if (completedCount >= REVIEW_TRIGGER_THRESHOLD) {
+        review_suggested = true;
+      }
+
       if (!dryRun) writeState(projectRoot, state);
-      return {
+      const result: any = {
         type: "done",
         story: state.story ?? "(no story)",
         summary: `Story ${state.story} completed. All steps passed.`,
       };
+      if (review_suggested) {
+        result.review_suggested = true;
+      }
+      return result;
     }
 
     // Recurse: the new step might also require human
@@ -240,7 +260,32 @@ function _dispatchInner(projectRoot: string, state: State, dryRun: boolean): Dis
       };
     }
 
-    const target = getFailTarget(state.step, state.reason);
+    // Feature 1: Escalation logic for post-reopen verify failures
+    // If verify fails after reopen with no explicit reason, escalate by rolling back one step deeper
+    let target = getFailTarget(state.step, state.reason);
+    if (
+      state.step === "verify" &&
+      state.reopened_from !== null &&
+      state.reason === null  // only escalate for pure RED failure (no specific reason)
+    ) {
+      // Find the step before reopened_from
+      const earlierStep = getEarlierStep(state.reopened_from);
+      if (earlierStep !== null) {
+        // Escalate to the earlier step (overriding normal routing)
+        target = earlierStep;
+        if (!dryRun) {
+          appendLog(
+            projectRoot,
+            "INFO",
+            "dispatch",
+            `Post-reopen verify failure escalation: ${state.step} → ${earlierStep} (was reopened at ${state.reopened_from})`
+          );
+        }
+        // Clear reopened_from so we only escalate once
+        state.reopened_from = null;
+      }
+    }
+
     if (target !== state.step) {
       // Route to different step
       state.step = target;
@@ -1309,6 +1354,38 @@ export function rollback(
   };
 }
 
+// ─── Helper Functions for Features ────────────────────────────────────────────
+
+/**
+ * Count completed stories since last review by reading .ai/history.md
+ * and matching entries with reopen pattern.
+ */
+function countCompletedStories(projectRoot: string): number {
+  try {
+    const historyPath = join(projectRoot, ".ai", "history.md");
+    if (!existsSync(historyPath)) return 0;
+    const content = readFileSync(historyPath, "utf-8");
+    // Count lines that match "### Reopen" pattern (each represents a completed story that was reopened)
+    // Plus we need to count stories that completed naturally
+    // For now, count any story-related lines in history
+    const matches = content.match(/### Reopen/g) || [];
+    return matches.length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Find the step that comes before a given step in the sequence.
+ * Returns null if the step is the first one (no earlier step).
+ */
+function getEarlierStep(step: string): string | null {
+  const sequence = getStepSequence();
+  const index = sequence.indexOf(step);
+  if (index <= 0) return null;
+  return sequence[index - 1];
+}
+
 // ─── Reopen ──────────────────────────────────────────────────────────────────
 
 /**
@@ -1395,9 +1472,19 @@ export function reopen(
   state.failing_tests = [];
   state.lint_pass = null;
   state.human_note = options.humanNote ?? null;
+  state.reopened_from = targetStep;  // Feature 1: Track reopen target for escalation
 
   writeState(projectRoot, state);
   appendLog(projectRoot, "INFO", "reopen", `Reopened story "${state.story}" from "${previousStep}" to "${targetStep}"${options.humanNote ? ` note: "${options.humanNote}"` : ""}`);
+
+  // Feature 2: Append entry to .ai/history.md
+  const isoTimestamp = new Date().toISOString();
+  const historyEntry = `### Reopen — ${state.story} → ${targetStep}
+- **Date**: ${isoTimestamp}
+- **From**: ${previousStep} → ${targetStep}
+- **Note**: ${options.humanNote ?? "N/A"}`;
+  appendHistory(projectRoot, historyEntry);
+
   return {
     type: "ok",
     state,

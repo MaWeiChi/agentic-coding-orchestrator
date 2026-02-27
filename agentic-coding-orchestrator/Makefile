@@ -70,5 +70,8 @@ clean:
 	rm -rf dist/
 
 # ─── Publish ──────────────────────────────────────────────────────────────────
+adduser:
+	npm adduser
+
 publish:
 	npm run build && npm publish --access public 

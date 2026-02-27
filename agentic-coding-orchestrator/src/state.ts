@@ -36,6 +36,7 @@ export interface State {
   last_error: string | null;
   task_type: string;
   agent_teams: boolean;
+  reopened_from: string | null;
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
@@ -62,6 +63,7 @@ export function createInitialState(project: string): State {
     last_error: null,
     task_type: "story",
     agent_teams: false,
+    reopened_from: null,
   };
 }
 
@@ -138,6 +140,26 @@ export function appendLog(
     writeFileSync(logPath, existing + line, "utf-8");
   } catch {
     // best-effort — if .ai/ doesn't exist yet, silently skip
+  }
+}
+
+/**
+ * Append a markdown entry to .ai/history.md (best-effort, never throws).
+ * If .ai/ directory doesn't exist, silently skips.
+ */
+export function appendHistory(projectRoot: string, entry: string): void {
+  try {
+    const historyPath = join(projectRoot, ".ai", "history.md");
+    const aiDir = dirname(historyPath);
+    if (!existsSync(aiDir)) {
+      mkdirSync(aiDir, { recursive: true });
+    }
+    let existing = "";
+    try { existing = readFileSync(historyPath, "utf-8"); } catch { /* file may not exist */ }
+    const content = existing + entry + "\n";
+    writeFileSync(historyPath, content, "utf-8");
+  } catch {
+    // best-effort — silently skip
   }
 }
 
