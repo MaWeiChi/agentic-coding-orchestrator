@@ -14,6 +14,9 @@
  *   rollback <project-root> <target-step>       Roll back to a previous step [v0.6.0]
  *   check-prereqs <project-root>                Check prerequisite files [v0.6.0]
  *   status <project-root>                       Print current STATE.json
+ *   reopen <project-root> <target-step>         Reopen completed story at step [v0.8.0]
+ *   review <project-root>                       On-demand review session prompt [v0.8.0]
+ *   triage <project-root>                       Triage ISSUES into action plan [v0.8.0]
  */
 
 import { resolve } from "path";
@@ -33,6 +36,9 @@ import {
   listProjects,
   rollback,
   checkPrerequisites,
+  reopen,
+  review,
+  triage,
 } from "./dispatch";
 import { auto } from "./auto";
 import { readFileSync } from "fs";
@@ -60,6 +66,9 @@ Commands:
   query <project-root>                   Project status summary (for OpenClaw)
   detect <project-root>                  Check if project uses the framework
   list-projects <workspace-root>         List all projects in workspace
+  reopen <project-root> <target-step>    Reopen completed story at step [v0.8.0]
+  review <project-root>                  Generate on-demand review session prompt [v0.8.0]
+  triage <project-root>                  Triage unfixed ISSUES into action plan [v0.8.0]
 `);
   process.exit(1);
 }
@@ -134,6 +143,21 @@ try {
         case "listed":
           console.error(
             `[auto] Found ${(result as any).projects.length} project(s)`,
+          );
+          break;
+        case "review":
+          console.error(
+            `[auto] Review session prompt generated (fw_lv=${(result as any).fw_lv})`,
+          );
+          break;
+        case "triage":
+          console.error(
+            `[auto] Triage prompt generated for ${(result as any).issues.length} issue(s) (fw_lv=${(result as any).fw_lv})`,
+          );
+          break;
+        case "reopened":
+          console.error(
+            `[auto] Reopened: ${(result as any).story} at step ${(result as any).step}`,
           );
           break;
         case "error":
@@ -497,6 +521,58 @@ try {
       writeState(projectRoot, state);
       appendLog(projectRoot, "ERROR", "cli:report-error", `step="${state.step}" ${errorMsg}`);
       console.log(`Recorded error for step "${state.step}": ${errorMsg}`);
+      break;
+    }
+
+    // [v0.8.0] Reopen a completed story at a specific step
+    case "reopen": {
+      const projectRoot = resolveRoot(args[0]);
+      const targetStep = args[1];
+      if (!targetStep) {
+        console.error("Error: <target-step> is required");
+        console.error(
+          "Example: orchestrator reopen ./project impl",
+        );
+        process.exit(1);
+      }
+      const humanNote = args[2] || undefined;
+      const reopenResult = reopen(projectRoot, targetStep, { humanNote });
+      if (reopenResult.type === "error") {
+        console.log(JSON.stringify(reopenResult, null, 2));
+        console.error(`[reopen] ERROR (${reopenResult.code}): ${reopenResult.message}`);
+        process.exit(1);
+      }
+      const reopenState = reopenResult.state;
+      console.log(
+        `Reopened story "${reopenState.story}" at step "${reopenState.step}" (status: ${reopenState.status}, attempt: ${reopenState.attempt})`,
+      );
+      break;
+    }
+
+    // [v0.8.0] On-demand review session — generate prompt
+    case "review": {
+      const projectRoot = resolveRoot(args[0]);
+      const result = review(projectRoot);
+      // Print prompt to stdout (can be piped to claude -p)
+      console.log(result.prompt);
+      console.error(`[review] Generated review prompt (fw_lv=${result.fw_lv})`);
+      appendLog(projectRoot, "INFO", "cli:review", `Generated review session prompt fw_lv=${result.fw_lv}`);
+      break;
+    }
+
+    // [v0.8.0] Triage ISSUES into action plan
+    case "triage": {
+      const projectRoot = resolveRoot(args[0]);
+      const result = triage(projectRoot);
+      if (result.type === "error") {
+        console.log(JSON.stringify(result, null, 2));
+        console.error(`[triage] ERROR (${result.code}): ${result.message}`);
+        process.exit(1);
+      }
+      // Print prompt to stdout
+      console.log(result.prompt);
+      console.error(`[triage] Generated triage prompt for ${result.issues.length} issue(s) (fw_lv=${result.fw_lv})`);
+      appendLog(projectRoot, "INFO", "cli:triage", `Generated triage prompt for ${result.issues.length} issue(s) fw_lv=${result.fw_lv}`);
       break;
     }
 

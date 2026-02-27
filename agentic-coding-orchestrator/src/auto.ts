@@ -22,6 +22,9 @@ import {
   detectFramework,
   queryProjectStatus,
   listProjects,
+  reopen,
+  review,
+  triage,
 } from "./dispatch";
 import { getRule } from "./rules";
 import { readState, sanitize, writeState } from "./state";
@@ -36,6 +39,9 @@ type Intent =
   | { type: "continue" }
   | { type: "detect" }
   | { type: "list" }
+  | { type: "review" }
+  | { type: "triage" }
+  | { type: "reopen"; targetStep: string; humanNote?: string }
   | { type: "custom"; instruction: string };
 
 // ─── Classifier ──────────────────────────────────────────────────────────────
@@ -84,6 +90,25 @@ export function classify(message: string): Intent {
   // ── Detect framework ──
   if (/framework|有沒有用|adoption|detect/i.test(lower)) {
     return { type: "detect" };
+  }
+
+  // ── Review (on-demand review session) ── [v0.8.0]
+  if (/^(review|審查|review\s*session|code\s*review|安全掃描|security\s*scan)\s*$/i.test(msg)) {
+    return { type: "review" };
+  }
+
+  // ── Triage (ISSUES → action plan) ── [v0.8.0]
+  if (/^(triage|分類|分診|triage\s*issues?|處理\s*issues?)\s*$/i.test(msg)) {
+    return { type: "triage" };
+  }
+
+  // ── Reopen (completed story re-entry) ── [v0.8.0]
+  const reopenMatch = msg.match(
+    /(?:reopen|重開|re-open|重新開啟)\s+(?:at\s+)?(\w[\w-]*)/i,
+  );
+  if (reopenMatch) {
+    const rest = msg.replace(reopenMatch[0], "").trim();
+    return { type: "reopen", targetStep: reopenMatch[1], humanNote: rest || undefined };
   }
 
   // ── Query (information requests — no code changes) ──
@@ -211,6 +236,48 @@ export function auto(
           action: "listed",
           projects: listProjects(projectRoot),
         };
+      case "review": {
+        const result = review(projectRoot);
+        return {
+          action: "review",
+          prompt: result.prompt,
+          fw_lv: result.fw_lv,
+        };
+      }
+      case "triage": {
+        const result = triage(projectRoot);
+        if (result.type === "error") {
+          return {
+            action: "error",
+            code: result.code,
+            message: result.message,
+          };
+        }
+        return {
+          action: "triage",
+          prompt: result.prompt,
+          issues: result.issues,
+          fw_lv: result.fw_lv,
+        };
+      }
+      case "reopen": {
+        const result = reopen(projectRoot, intent.targetStep, {
+          humanNote: intent.humanNote,
+        });
+        if (result.type === "error") {
+          return {
+            action: "error",
+            code: result.code,
+            message: result.message,
+          };
+        }
+        return {
+          action: "reopened",
+          story: result.state.story,
+          step: result.state.step,
+          message: result.message,
+        };
+      }
       case "custom":
         return handleCustom(projectRoot, intent.instruction);
     }

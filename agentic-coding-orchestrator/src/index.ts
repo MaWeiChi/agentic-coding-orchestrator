@@ -59,5 +59,8 @@ export {
   rollback, // [v0.6.0] Rollback to previous step
   checkPrerequisites, // [v0.6.0] Pre-dispatch file checks
   generateChecklist, // [v0.6.0] Per-story checklist generation
+  reopen, // [v0.8.0] Reopen completed story at step
+  review, // [v0.8.0] On-demand review session prompt
+  triage, // [v0.8.0] Triage ISSUES into action plan
 } from "./dispatch";
 export type { DispatchResult, HandoffData, PrereqCheckResult } from "./dispatch";

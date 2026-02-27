@@ -1309,6 +1309,393 @@ export function rollback(
   };
 }
 
+// ─── Reopen ──────────────────────────────────────────────────────────────────
+
+/**
+ * Reopen a completed story at a specified step.
+ *
+ * Unlike rollback() which moves backwards within an active story,
+ * reopen() specifically targets stories that have reached step "done".
+ * It resets state to the target step so the pipeline can re-execute from there.
+ *
+ * Use case: Review Session or triage found issues in a completed US —
+ * human decides to reopen it at a specific step (e.g., "impl", "verify").
+ *
+ * Guards:
+ *   - Story must be in "done" state (use rollback for active stories)
+ *   - Target step must be a valid pipeline step
+ *   - Cannot reopen to "done" (that's a no-op)
+ *
+ * [v0.8.0] FB-009: Review → Triage → Re-entry
+ */
+export function reopen(
+  projectRoot: string,
+  targetStep: string,
+  options: { humanNote?: string } = {},
+): ActionResult {
+  let state: State;
+  try {
+    state = readState(projectRoot);
+  } catch (err) {
+    return { type: "error", code: "STATE_NOT_FOUND", message: (err as Error).message, recoverable: false };
+  }
+
+  // Guard: story must be completed
+  if (state.step !== "done") {
+    appendLog(projectRoot, "ERROR", "reopen", `NOT_DONE: current step is "${state.step}", not "done". Use rollback instead.`);
+    return {
+      type: "error",
+      code: "NOT_DONE",
+      message: `Cannot reopen: story is at step "${state.step}", not "done". Use "rollback" for active stories.`,
+      recoverable: false,
+    };
+  }
+
+  // Cannot reopen to "done" (check before sequence validation since "done" isn't in sequence)
+  if (targetStep === "done") {
+    return {
+      type: "error",
+      code: "REOPEN_TO_DONE",
+      message: `Cannot reopen to "done" — story is already done.`,
+      recoverable: false,
+    };
+  }
+
+  // Validate target step
+  const sequence = getStepSequence();
+  const targetIndex = targetStep === "bootstrap" ? -1 : sequence.indexOf(targetStep);
+
+  if (targetStep !== "bootstrap" && targetIndex === -1) {
+    appendLog(projectRoot, "ERROR", "reopen", `INVALID_TARGET: "${targetStep}"`);
+    return {
+      type: "error",
+      code: "INVALID_TARGET",
+      message: `Invalid reopen target "${targetStep}". Valid steps: bootstrap, ${sequence.join(", ")}`,
+      recoverable: false,
+    };
+  }
+
+  // Reset state to target step
+  const previousStep = state.step; // "done"
+  const rule = targetStep === "bootstrap"
+    ? getRule("bootstrap")
+    : getRule(targetStep);
+
+  state.step = targetStep;
+  state.status = "pending";
+  state.attempt = 1;
+  state.max_attempts = rule.max_attempts;
+  state.timeout_min = rule.timeout_min;
+  state.reason = null;
+  state.last_error = null;
+  state.files_changed = [];
+  state.dispatched_at = null;
+  state.completed_at = null;
+  state.tests = null;
+  state.failing_tests = [];
+  state.lint_pass = null;
+  state.human_note = options.humanNote ?? null;
+
+  writeState(projectRoot, state);
+  appendLog(projectRoot, "INFO", "reopen", `Reopened story "${state.story}" from "${previousStep}" to "${targetStep}"${options.humanNote ? ` note: "${options.humanNote}"` : ""}`);
+  return {
+    type: "ok",
+    state,
+    message: `Reopened story "${state.story}" at step "${targetStep}" (attempt 1, status: pending)`,
+  };
+}
+
+// ─── Review (On-Demand Review Session) ───────────────────────────────────────
+
+/**
+ * Generate a Review Session prompt for the current project.
+ *
+ * This is a STATELESS operation — it reads project state but does NOT
+ * mutate STATE.json. The caller (CC executor) receives the prompt and
+ * runs the review; results are acted on by the human (reopen, new US, etc.).
+ *
+ * Works on non-ACF projects too (detectFramework level 0): generates a
+ * lighter review prompt based on whatever files exist.
+ *
+ * Review Session checks (from Lifecycle v0.9):
+ *   1. Code Review — diff quality, naming, duplication
+ *   2. Spec-Code Coherence — BDD ↔ tests ↔ impl alignment
+ *   3. Regression — all existing tests still pass
+ *   4. Security Scan — no hardcoded secrets, .gitignore coverage
+ *   5. Memory Audit — PROJECT_MEMORY accuracy
+ *
+ * [v0.8.0] FB-009: Review → Triage → Re-entry
+ */
+export function review(
+  projectRoot: string,
+): { type: "review_prompt"; prompt: string; fw_lv: number } {
+  const framework = detectFramework(projectRoot);
+  const prompt = buildReviewPrompt(projectRoot, framework.level);
+  return {
+    type: "review_prompt",
+    prompt,
+    fw_lv: framework.level,
+  };
+}
+
+/**
+ * Build the review session prompt based on framework adoption level.
+ */
+function buildReviewPrompt(projectRoot: string, fwLevel: number): string {
+  const lines: string[] = [];
+
+  lines.push("═══════════════════════════════════════════════════════════════");
+  lines.push("  ON-DEMAND REVIEW SESSION");
+  lines.push("═══════════════════════════════════════════════════════════════");
+  lines.push("");
+
+  if (fwLevel >= 2) {
+    // Full ACF project — rich review
+    let state: State | null = null;
+    try { state = readState(projectRoot); } catch { /* no state */ }
+
+    lines.push(`Project: ${state?.project ?? "(unknown)"}`);
+    lines.push(`Story: ${state?.story ?? "(no active story)"}`);
+    lines.push(`Current Step: ${state?.step ?? "(unknown)"}`);
+    lines.push("");
+    lines.push("## Review Checklist");
+    lines.push("");
+    lines.push("### 1. Code Review");
+    lines.push("- Check recent changes for naming consistency, duplication, dead code");
+    lines.push("- Verify diff-only discipline: only files related to the story should be modified");
+    lines.push("");
+    lines.push("### 2. Spec-Code Coherence");
+    lines.push("- Read BDD scenarios in docs/bdd/ and verify each has a corresponding test");
+    lines.push("- Read SDD Delta in docs/deltas/ and verify implementation matches");
+    lines.push("- Check that API contracts in docs/api/ are synchronized");
+    lines.push("");
+    lines.push("### 3. Regression");
+    lines.push("- Run the project's test suite and confirm all tests pass");
+    lines.push("- If tests fail, record them in ISSUES section of PROJECT_MEMORY.md");
+    lines.push("");
+    lines.push("### 4. Security Scan");
+    lines.push("- grep for common secret patterns: password=, apikey=, token=, BEGIN RSA PRIVATE KEY");
+    lines.push("- Verify .gitignore covers: .env, *.key, credentials.json, *.pem");
+    lines.push("- Confirm test fixtures use mock/fake values, not real credentials");
+    lines.push("");
+    lines.push("### 5. Memory Audit");
+    lines.push("- Read PROJECT_MEMORY.md and verify NOW/TESTS/NEXT/ISSUES sections are accurate");
+    lines.push("- Check .ai/history.md for completeness");
+    lines.push("- Verify HANDOFF.md reflects the latest session state");
+  } else if (fwLevel === 1) {
+    // Partial ACF — moderate review
+    lines.push("## Review Checklist (Partial ACF Project)");
+    lines.push("");
+    lines.push("### 1. Code Review");
+    lines.push("- Check recent changes for quality, naming, duplication");
+    lines.push("");
+    lines.push("### 2. Spec Coherence");
+    lines.push("- If BDD/SDD docs exist, verify alignment with code");
+    lines.push("");
+    lines.push("### 3. Regression");
+    lines.push("- Run available test suite and confirm all tests pass");
+    lines.push("");
+    lines.push("### 4. Security Scan");
+    lines.push("- grep for hardcoded secrets (password=, apikey=, token=)");
+    lines.push("- Verify .gitignore covers sensitive file patterns");
+    lines.push("");
+    lines.push("### 5. Memory Check");
+    lines.push("- If PROJECT_MEMORY.md exists, verify it is up to date");
+  } else {
+    // Non-ACF project — lightweight review
+    lines.push("## Review Checklist (Non-ACF Project)");
+    lines.push("");
+    lines.push("### 1. Code Review");
+    lines.push("- Review recent git changes (git log + git diff) for quality");
+    lines.push("- Check for dead code, duplication, naming issues");
+    lines.push("");
+    lines.push("### 2. Test Check");
+    lines.push("- Locate and run the project's test suite (if any)");
+    lines.push("- Report test results");
+    lines.push("");
+    lines.push("### 3. Security Scan");
+    lines.push("- grep for hardcoded secrets (password=, apikey=, token=)");
+    lines.push("- Check .gitignore for sensitive patterns");
+  }
+
+  lines.push("");
+  lines.push("═══════════════════════════════════════════════════════════════");
+  lines.push("  OUTPUT FORMAT");
+  lines.push("═══════════════════════════════════════════════════════════════");
+  lines.push("");
+  lines.push("For each check, report:");
+  lines.push("  PASS — <brief note>");
+  lines.push("  WARN — <issue description>");
+  lines.push("  FAIL — <issue description + suggested action>");
+  lines.push("");
+  lines.push("At the end, provide a summary with recommended actions:");
+  lines.push("  - REOPEN <US-XXX> at <step> — if existing story needs rework");
+  lines.push("  - NEW US — <brief description> — if a new story is needed");
+  lines.push("  - ISSUE — <description> — record in PROJECT_MEMORY.md ISSUES");
+  lines.push("  - ALL CLEAR — no issues found");
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+// ─── Triage (ISSUES → Actionable Plan) ──────────────────────────────────────
+
+/**
+ * Read unfixed ISSUES from PROJECT_MEMORY.md and generate a triage prompt.
+ *
+ * This is a STATELESS operation — reads files but does NOT mutate STATE.json.
+ * The triage prompt asks the executor (CC) to classify each issue and
+ * recommend actions (reopen US, create new US, or dismiss).
+ *
+ * Requires PROJECT_MEMORY.md to exist with an ISSUES section.
+ *
+ * [v0.8.0] FB-009: Review → Triage → Re-entry
+ */
+export function triage(
+  projectRoot: string,
+): { type: "triage_prompt"; prompt: string; issues: string[]; fw_lv: number }
+ | { type: "error"; code: string; message: string; recoverable: boolean } {
+  const framework = detectFramework(projectRoot);
+
+  // Read PROJECT_MEMORY.md
+  const memoryPath = join(projectRoot, "PROJECT_MEMORY.md");
+  if (!existsSync(memoryPath)) {
+    return {
+      type: "error",
+      code: "NO_MEMORY",
+      message: "PROJECT_MEMORY.md not found. Cannot triage without ISSUES section.",
+      recoverable: false,
+    };
+  }
+
+  const memory = readFileSync(memoryPath, "utf-8");
+  const issues = parseIssuesFromMemory(memory);
+
+  if (issues.length === 0) {
+    return {
+      type: "error",
+      code: "NO_ISSUES",
+      message: "No unfixed ISSUES found in PROJECT_MEMORY.md. Nothing to triage.",
+      recoverable: false,
+    };
+  }
+
+  const prompt = buildTriagePrompt(projectRoot, issues, framework.level);
+  return {
+    type: "triage_prompt",
+    prompt,
+    issues,
+    fw_lv: framework.level,
+  };
+}
+
+/**
+ * Parse ISSUES lines from PROJECT_MEMORY.md.
+ * Looks for lines starting with "- [ ]" under a section containing "ISSUES".
+ * Filters out already-checked items "- [x]".
+ */
+function parseIssuesFromMemory(memory: string): string[] {
+  const lines = memory.split("\n");
+  let inIssuesSection = false;
+  const issues: string[] = [];
+
+  for (const line of lines) {
+    // Detect ISSUES section header (## ISSUES, ### ISSUES, or just ISSUES:)
+    if (/^#{1,4}\s*ISSUES/i.test(line) || /^ISSUES\s*:/i.test(line)) {
+      inIssuesSection = true;
+      continue;
+    }
+
+    // Exit ISSUES section on next header
+    if (inIssuesSection && /^#{1,4}\s/.test(line) && !/ISSUES/i.test(line)) {
+      inIssuesSection = false;
+      continue;
+    }
+
+    // Collect unchecked items
+    if (inIssuesSection && /^-\s*\[\s*\]/.test(line)) {
+      issues.push(line.replace(/^-\s*\[\s*\]\s*/, "").trim());
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Build the triage prompt with parsed issues.
+ */
+function buildTriagePrompt(
+  projectRoot: string,
+  issues: string[],
+  fwLevel: number,
+): string {
+  const lines: string[] = [];
+
+  lines.push("═══════════════════════════════════════════════════════════════");
+  lines.push("  TRIAGE SESSION");
+  lines.push("═══════════════════════════════════════════════════════════════");
+  lines.push("");
+
+  let state: State | null = null;
+  try { state = readState(projectRoot); } catch { /* no state */ }
+  if (state) {
+    lines.push(`Project: ${state.project ?? "(unknown)"}`);
+    lines.push(`Current Story: ${state.story ?? "(none)"}`);
+    lines.push(`Current Step: ${state.step}`);
+    lines.push("");
+  }
+
+  lines.push(`## Unfixed ISSUES (${issues.length})`);
+  lines.push("");
+  for (let i = 0; i < issues.length; i++) {
+    lines.push(`  ${i + 1}. ${issues[i]}`);
+  }
+  lines.push("");
+
+  lines.push("## Triage Instructions");
+  lines.push("");
+  lines.push("For each issue above, analyze and classify:");
+  lines.push("");
+  lines.push("  A. REOPEN <US-XXX> at <step>");
+  lines.push("     → Issue belongs to an existing story; reopen it at the appropriate step.");
+  lines.push("     → The human will run: orchestrator reopen <project> <step>");
+  lines.push("");
+  lines.push("  B. NEW US: <title>");
+  lines.push("     → Issue requires a new User Story. Write a 1-2 sentence description.");
+  lines.push("     → The human will create the US and run: orchestrator start-story <project> <US-XXX>");
+  lines.push("");
+  lines.push("  C. DISMISS: <reason>");
+  lines.push("     → Issue is resolved, duplicate, or no longer relevant.");
+  lines.push("     → The human will mark it [x] in PROJECT_MEMORY.md.");
+  lines.push("");
+
+  if (fwLevel >= 2) {
+    lines.push("## Context Files");
+    lines.push("Read these files to inform your triage decisions:");
+    lines.push("  - PROJECT_MEMORY.md (full context: NOW, TESTS, NEXT, ISSUES)");
+    lines.push("  - .ai/history.md (completed work log)");
+    lines.push("  - docs/bdd/ (BDD scenarios for existing stories)");
+    lines.push("  - docs/deltas/ (SDD deltas for existing stories)");
+    lines.push("");
+  }
+
+  lines.push("═══════════════════════════════════════════════════════════════");
+  lines.push("  OUTPUT FORMAT");
+  lines.push("═══════════════════════════════════════════════════════════════");
+  lines.push("");
+  lines.push("Produce a triage plan as a numbered list matching the issues above:");
+  lines.push("");
+  lines.push("  1. [A] REOPEN US-001 at impl — <reason>");
+  lines.push("  2. [B] NEW US: \"Add input validation for email field\" — <reason>");
+  lines.push("  3. [C] DISMISS — resolved in commit abc123");
+  lines.push("");
+  lines.push("End with a SUMMARY: X to reopen, Y new US, Z dismissed.");
+  lines.push("This plan is HUMAN-GATED — no actions will be taken automatically.");
+  lines.push("");
+
+  return lines.join("\n");
+}
+
 // ─── Pre-Dispatch Prerequisite Check ─────────────────────────────────────────
 
 export interface PrereqCheckResult {
