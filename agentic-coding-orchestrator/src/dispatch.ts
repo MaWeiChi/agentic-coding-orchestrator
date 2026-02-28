@@ -10,7 +10,7 @@
  *   peek(projectRoot)      — [FIX P1] read-only dispatch preview (no mutation)
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import {
   readState,
@@ -1407,6 +1407,16 @@ export function rollback(
   state.lint_pass = null;
 
   writeState(projectRoot, state);
+
+  // [FIX P0] Clear stale HANDOFF.md — without this, the next dispatch's
+  // Stop/SessionEnd hook reads the previous step's HANDOFF (e.g. "verify")
+  // and the stale guard rejects it because it doesn't match the rolled-back step.
+  const handoffPath = join(projectRoot, ".ai", "HANDOFF.md");
+  if (existsSync(handoffPath)) {
+    unlinkSync(handoffPath);
+    appendLog(projectRoot, "INFO", "rollback", `Cleared stale HANDOFF.md from "${previousStep}"`);
+  }
+
   appendLog(projectRoot, "INFO", "rollback", `Rolled back from "${previousStep}" to "${targetStep}"`);
   return {
     type: "ok",
@@ -1536,6 +1546,14 @@ export function reopen(
   state.reopened_from = targetStep;  // Feature 1: Track reopen target for escalation
 
   writeState(projectRoot, state);
+
+  // Clear stale HANDOFF.md (same reason as rollback)
+  const reopenHandoffPath = join(projectRoot, ".ai", "HANDOFF.md");
+  if (existsSync(reopenHandoffPath)) {
+    unlinkSync(reopenHandoffPath);
+    appendLog(projectRoot, "INFO", "reopen", `Cleared stale HANDOFF.md from "${previousStep}"`);
+  }
+
   appendLog(projectRoot, "INFO", "reopen", `Reopened story "${state.story}" from "${previousStep}" to "${targetStep}"${options.humanNote ? ` note: "${options.humanNote}"` : ""}`);
 
   // Feature 2: Append entry to .ai/history.md

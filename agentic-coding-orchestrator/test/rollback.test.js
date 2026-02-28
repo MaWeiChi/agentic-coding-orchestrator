@@ -12,7 +12,7 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } = require("fs");
+const { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } = require("fs");
 const { join } = require("path");
 const { tmpdir } = require("os");
 
@@ -140,6 +140,25 @@ describe("rollback: state reset correctness", () => {
     assert.equal(state.dispatched_at, null);
     assert.equal(state.completed_at, null);
     assert.deepEqual(state.files_changed, []);
+  });
+
+  it("clears stale HANDOFF.md", () => {
+    setupState(tempDir, {
+      story: "US-021",
+      step: "verify",
+      status: "pass",
+      attempt: 1,
+      max_attempts: 2,
+    });
+
+    // Write a HANDOFF.md that would be stale after rollback
+    const handoffPath = join(tempDir, ".ai", "HANDOFF.md");
+    writeFileSync(handoffPath, "---\nstory: US-021\nstep: verify\nstatus: pass\n---\n# Old HANDOFF\n");
+    assert.ok(existsSync(handoffPath), "HANDOFF.md should exist before rollback");
+
+    const result = rollback(tempDir, "scaffold");
+    assert.equal(result.type, "ok");
+    assert.ok(!existsSync(handoffPath), "HANDOFF.md should be cleared after rollback");
   });
 
   it("preserves story ID after rollback", () => {
