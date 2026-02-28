@@ -89,6 +89,7 @@ export type DispatchResult =
 export type HandoffResult =
   | { type: "applied"; state: State }
   | { type: "stale"; state: State; message: string }
+  | { type: "pending"; state: State; message: string }
   | { type: "missing"; state: State; message: string }
   | { type: "error"; code: string; message: string; state?: State; recoverable: boolean };
 
@@ -771,7 +772,19 @@ export function applyHandoff(projectRoot: string): HandoffResult {
   const handoff = parseHandoff(projectRoot);
 
   if (!handoff) {
-    // No HANDOFF.md — executor might have crashed
+    // [FIX P0] If state is "running", HANDOFF absence means executor hasn't
+    // written it yet (e.g. Stop hook fired mid-session, or HANDOFF.md was
+    // intentionally cleared before CC launch to prevent stale reads).
+    // Only mark "failing" if state is NOT running (executor finished without HANDOFF).
+    if (state.status === "running") {
+      appendLog(projectRoot, "INFO", "applyHandoff", `No HANDOFF.md found but step "${state.step}" is still running — treating as pending`);
+      return {
+        type: "pending",
+        state,
+        message: `No HANDOFF.md found; step "${state.step}" is still running. Executor may not have written it yet.`,
+      };
+    }
+    // Executor finished (state != running) but left no HANDOFF — likely crashed
     state.status = "failing";
     state.reason = null;
     state.completed_at = new Date().toISOString();

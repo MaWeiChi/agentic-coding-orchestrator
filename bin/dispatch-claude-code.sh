@@ -183,6 +183,17 @@ CLAUDE_CMD+=(-p "$PROMPT")
 cd "$ABS_WORKDIR"
 export RESULT_DIR
 
+# [FIX P0] Clear stale HANDOFF.md before launching CC.
+# Without this, the Stop/SessionEnd hook reads the PREVIOUS step's HANDOFF
+# (e.g. "verify") while STATE is at the current step (e.g. "scaffold"),
+# causing stale guard to reject a valid pipeline run.
+# CC will write a fresh HANDOFF.md during its session.
+HANDOFF_FILE="${ABS_WORKDIR}/.ai/HANDOFF.md"
+if [ -f "$HANDOFF_FILE" ]; then
+    echo "Clearing stale HANDOFF.md before CC launch" >&2
+    rm -f "$HANDOFF_FILE"
+fi
+
 "${CLAUDE_CMD[@]}" 2>&1 | tee "$TASK_OUTPUT"
 EXIT_CODE=${PIPESTATUS[0]}
 

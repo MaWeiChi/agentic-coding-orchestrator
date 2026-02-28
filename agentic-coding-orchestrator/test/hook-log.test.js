@@ -216,7 +216,7 @@ Done.`);
     assert.ok(log.includes("42/0/0"), "should include test counts");
   });
 
-  it("missing HANDOFF logs WARN", () => {
+  it("missing HANDOFF when running returns pending", () => {
     setupState(tempDir, {
       story: "US-001",
       step: "impl",
@@ -227,13 +227,35 @@ Done.`);
       timeout_min: 10,
     });
 
-    // No HANDOFF.md written
+    // No HANDOFF.md written — state is running, so treated as pending (not crashed)
+    const result = applyHandoff(tempDir);
+    assert.equal(result.type, "pending");
+
+    const log = readLog(tempDir);
+    assert.ok(log.includes("[INFO]"), "should log INFO for pending (not crashed)");
+    assert.ok(log.includes("No HANDOFF.md"), "should mention missing HANDOFF");
+    assert.ok(log.includes("still running"), "should indicate step is still running");
+  });
+
+  it("missing HANDOFF when NOT running marks failing", () => {
+    setupState(tempDir, {
+      story: "US-001",
+      step: "impl",
+      status: "pass",   // not running — executor already completed
+      attempt: 1,
+      max_attempts: 5,
+      dispatched_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      timeout_min: 10,
+    });
+
+    // No HANDOFF.md written — state is not running, so executor crashed
     const result = applyHandoff(tempDir);
     assert.equal(result.type, "missing");
 
     const log = readLog(tempDir);
-    assert.ok(log.includes("[WARN]"), "should log WARN for missing");
-    assert.ok(log.includes("No HANDOFF.md"), "should mention missing HANDOFF");
+    assert.ok(log.includes("[WARN]"), "should log WARN for missing (crashed)");
+    assert.ok(log.includes("may have crashed"), "should mention crash possibility");
   });
 });
 

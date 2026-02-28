@@ -365,6 +365,9 @@ try {
       if (result.type === "stale") {
         console.error(`[apply-handoff] STALE: ${result.message}`);
       }
+      if (result.type === "pending") {
+        console.error(`[apply-handoff] PENDING: ${result.message}`);
+      }
       if (result.type === "missing") {
         console.error(`[apply-handoff] MISSING: ${result.message}`);
       }
