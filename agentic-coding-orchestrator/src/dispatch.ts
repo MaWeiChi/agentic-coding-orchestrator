@@ -38,6 +38,43 @@ import {
 /** After N stories reach "done", automatically suggest/trigger a review session */
 const REVIEW_TRIGGER_THRESHOLD = 3;
 
+/**
+ * Step name alias map — CC executors derive step names from display_name
+ * or prompt context, which may not match ACO's internal step identifiers.
+ * Applied during applyHandoff() to normalize HANDOFF.step before the
+ * stale guard comparison.
+ *
+ * [FIX P0] Without this, valid HANDOFFs are rejected as "stale" because
+ * e.g. "api-contract" !== "contract", causing the pipeline to stall.
+ */
+const STEP_ALIAS_MAP: Record<string, string> = {
+  // contract step aliases
+  "api-contract": "contract",
+  "api_contract": "contract",
+  "contract-update": "contract",
+  "api-contract-update": "contract",
+  // scaffold step aliases
+  "test-scaffolding": "scaffold",
+  "test_scaffolding": "scaffold",
+  "scaffolding": "scaffold",
+  "test-scaffold": "scaffold",
+  // sdd-delta aliases
+  "sdd_delta": "sdd-delta",
+  "sdd": "sdd-delta",
+  "delta": "sdd-delta",
+  "delta-spec": "sdd-delta",
+  // verify aliases
+  "quality-gate": "verify",
+  "quality_gate": "verify",
+  // update-memory aliases
+  "update_memory": "update-memory",
+  "memory-update": "update-memory",
+  // impl aliases
+  "implementation": "impl",
+  // commit aliases
+  "commit-changes": "commit",
+};
+
 // ─── Result Types ────────────────────────────────────────────────────────────
 
 export type DispatchResult =
@@ -326,13 +363,13 @@ function _dispatchInner(projectRoot: string, state: State, dryRun: boolean): Dis
     prompt = prompt + "\n" + lines.join("\n");
   }
 
+  // Detect framework adoption level so caller knows the context richness
+  const framework = detectFramework(projectRoot);
+
   if (!dryRun) {
     const running = markRunning(state);
     writeState(projectRoot, running);
   }
-
-  // Detect framework adoption level so caller knows the context richness
-  const framework = detectFramework(projectRoot);
 
   return {
     type: "dispatched",
@@ -746,6 +783,17 @@ export function applyHandoff(projectRoot: string): HandoffResult {
       state,
       message: state.last_error,
     };
+  }
+
+  // [FIX P0] Normalize HANDOFF step name — CC executors may write display-name
+  // variants (e.g. "api-contract" instead of "contract", "test-scaffolding"
+  // instead of "scaffold"). Without this, valid HANDOFFs are rejected as stale.
+  if (handoff.step) {
+    const normalized = STEP_ALIAS_MAP[handoff.step.toLowerCase()];
+    if (normalized) {
+      appendLog(projectRoot, "INFO", "applyHandoff", `Normalized HANDOFF step: "${handoff.step}" → "${normalized}"`);
+      handoff.step = normalized;
+    }
   }
 
   // [FIX P0] Stale HANDOFF guard: if HANDOFF.step doesn't match STATE.step,

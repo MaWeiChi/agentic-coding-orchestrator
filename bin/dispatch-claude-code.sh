@@ -58,22 +58,15 @@ if [ -n "$FROM_ORCHESTRATOR" ]; then
     RAW_OUTPUT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
 
     # If empty or "Already running", try apply-handoff to advance state, then retry
-    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"DONE:"* ]]; then
-        echo "First dispatch returned empty/done, attempting state advance..." >&2
+    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"Already running"* ]] || [[ "$RAW_OUTPUT" == *"DONE:"* ]]; then
+        echo "First dispatch returned empty/stale, attempting state advance..." >&2
         orchestrator apply-handoff "$FROM_ORCHESTRATOR" 2>/dev/null || true
         sleep 1
         RAW_OUTPUT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
     fi
 
-    # "Already running" — state was dispatched externally (e.g. by OpenClaw).
-    # Use peek to get the prompt without re-dispatching.
-    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"Already running"* ]]; then
-        echo "State already running, using peek to get prompt..." >&2
-        RAW_OUTPUT=$(orchestrator peek "$FROM_ORCHESTRATOR" 2>/dev/null)
-    fi
-
-    # Still empty after all retries — genuinely done or needs human
-    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"DONE:"* ]] || [[ "$RAW_OUTPUT" == *"NEEDS HUMAN"* ]]; then
+    # Still empty after retry — genuinely done or needs human
+    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"Already running"* ]] || [[ "$RAW_OUTPUT" == *"DONE:"* ]] || [[ "$RAW_OUTPUT" == *"NEEDS HUMAN"* ]]; then
         echo "Orchestrator returned no actionable prompt (story may be done or needs human)" >&2
         echo "Last output: ${RAW_OUTPUT:-<empty>}" >&2
         exit 0
@@ -123,6 +116,16 @@ META_FILE="${RESULT_DIR}/task-meta.json"
 TASK_OUTPUT="${RESULT_DIR}/task-output.txt"
 
 mkdir -p "$RESULT_DIR"
+
+# [FIX P0] Inherit runtime fields (group, notify_channel, notify_target) from
+# existing task-meta.json when not provided via CLI. Without this, subsequent
+# dispatch-claude-code.sh invocations overwrite these fields with empty strings,
+# causing the hook to skip WhatsApp/Telegram notifications for all steps after bdd.
+if [ -f "$META_FILE" ]; then
+    [ -z "$GROUP" ] && GROUP=$(jq -r '.group // ""' "$META_FILE" 2>/dev/null || echo "")
+    [ -z "$CHANNEL" ] && CHANNEL=$(jq -r '.notify_channel // ""' "$META_FILE" 2>/dev/null || echo "")
+    [ -z "$NOTIFY_TARGET" ] && NOTIFY_TARGET=$(jq -r '.notify_target // ""' "$META_FILE" 2>/dev/null || echo "")
+fi
 
 # Build task-meta.json — merge orchestrator <task-meta> fields when available
 if [ -n "$TASK_META_JSON" ]; then
