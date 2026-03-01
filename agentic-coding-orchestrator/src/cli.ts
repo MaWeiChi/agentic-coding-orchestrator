@@ -44,7 +44,11 @@ import { auto } from "./auto";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 
-const [, , command, ...args] = process.argv;
+// Sanitize CLI args: strip invisible Unicode characters (zero-width spaces,
+// word joiners, etc.) that sneak in from copy-paste. Without this, step names
+// like "impl⁠" (with U+2060) fail validation silently.
+const [, , command, ...rawArgs] = process.argv;
+const args = rawArgs.map(a => a.replace(/[^\x20-\x7E]/g, "").trim());
 
 function usage(): never {
   console.error(`Usage: orchestrator <command> [args]
@@ -264,6 +268,9 @@ try {
           // Print metadata to stderr for human readability
           console.error(
             `[dispatch] step=${result.step} attempt=${result.attempt}`,
+          );
+          console.error(
+            `[dispatch] ⚠️  State is now "running". To launch CC, use: dispatch-claude-code.sh --from-orchestrator .`,
           );
           appendLog(projectRoot, "INFO", "cli:dispatch", `dispatched step="${result.step}" attempt=${result.attempt} fw_lv=${result.fw_lv}`);
           break;

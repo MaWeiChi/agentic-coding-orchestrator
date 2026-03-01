@@ -142,7 +142,7 @@ describe("rollback: state reset correctness", () => {
     assert.deepEqual(state.files_changed, []);
   });
 
-  it("clears stale HANDOFF.md", () => {
+  it("preserves HANDOFF.md (timestamp guard handles stale detection)", () => {
     setupState(tempDir, {
       story: "US-021",
       step: "verify",
@@ -158,7 +158,9 @@ describe("rollback: state reset correctness", () => {
 
     const result = rollback(tempDir, "scaffold");
     assert.equal(result.type, "ok");
-    assert.ok(!existsSync(handoffPath), "HANDOFF.md should be cleared after rollback");
+    // HANDOFF.md is preserved — timestamp and step-name guards in applyHandoff
+    // handle stale detection instead of file deletion
+    assert.ok(existsSync(handoffPath), "HANDOFF.md preserved (guards handle stale)");
   });
 
   it("preserves story ID after rollback", () => {

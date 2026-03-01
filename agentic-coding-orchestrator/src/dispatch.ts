@@ -10,7 +10,7 @@
  *   peek(projectRoot)      — [FIX P1] read-only dispatch preview (no mutation)
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, statSync } from "fs";
 import { join } from "path";
 import {
   readState,
@@ -809,10 +809,26 @@ export function applyHandoff(projectRoot: string): HandoffResult {
     }
   }
 
-  // [FIX P0] Stale HANDOFF guard: if HANDOFF.step doesn't match STATE.step,
-  // this HANDOFF is from a previous step (e.g., hook re-fires after dispatch
-  // already advanced). Applying it would overwrite the current step's status
-  // with stale data, potentially skipping steps entirely.
+  // [FIX P0] Timestamp-based stale guard: if HANDOFF.md was last modified BEFORE
+  // the current dispatch started, it's from a previous step. This prevents the
+  // race condition where Stop/SessionEnd hook fires before CC writes the new HANDOFF.
+  // Tolerance: 2 seconds — filesystem mtime granularity + clock skew.
+  if (state.dispatched_at) {
+    const handoffPath = join(projectRoot, ".ai", "HANDOFF.md");
+    try {
+      const handoffMtime = statSync(handoffPath).mtimeMs;
+      const dispatchedAt = new Date(state.dispatched_at).getTime();
+      const TOLERANCE_MS = 2000;
+      if (handoffMtime < dispatchedAt - TOLERANCE_MS) {
+        const msg = `HANDOFF.md (mtime ${new Date(handoffMtime).toISOString()}) is older than dispatched_at (${state.dispatched_at}). Stale HANDOFF from previous step.`;
+        appendLog(projectRoot, "WARN", "applyHandoff", msg);
+        return { type: "stale", state, message: msg };
+      }
+    } catch { /* stat failed, continue to step-name guard */ }
+  }
+
+  // [FIX P0] Step-name stale guard (belt and suspenders): if HANDOFF.step doesn't
+  // match STATE.step, this HANDOFF is from a previous step.
   if (handoff.step && handoff.step !== state.step) {
     appendLog(projectRoot, "WARN", "applyHandoff", `Stale HANDOFF ignored: step "${handoff.step}" != state step "${state.step}"`);
     return {
@@ -1408,15 +1424,6 @@ export function rollback(
 
   writeState(projectRoot, state);
 
-  // [FIX P0] Clear stale HANDOFF.md — without this, the next dispatch's
-  // Stop/SessionEnd hook reads the previous step's HANDOFF (e.g. "verify")
-  // and the stale guard rejects it because it doesn't match the rolled-back step.
-  const handoffPath = join(projectRoot, ".ai", "HANDOFF.md");
-  if (existsSync(handoffPath)) {
-    unlinkSync(handoffPath);
-    appendLog(projectRoot, "INFO", "rollback", `Cleared stale HANDOFF.md from "${previousStep}"`);
-  }
-
   appendLog(projectRoot, "INFO", "rollback", `Rolled back from "${previousStep}" to "${targetStep}"`);
   return {
     type: "ok",
@@ -1546,13 +1553,6 @@ export function reopen(
   state.reopened_from = targetStep;  // Feature 1: Track reopen target for escalation
 
   writeState(projectRoot, state);
-
-  // Clear stale HANDOFF.md (same reason as rollback)
-  const reopenHandoffPath = join(projectRoot, ".ai", "HANDOFF.md");
-  if (existsSync(reopenHandoffPath)) {
-    unlinkSync(reopenHandoffPath);
-    appendLog(projectRoot, "INFO", "reopen", `Cleared stale HANDOFF.md from "${previousStep}"`);
-  }
 
   appendLog(projectRoot, "INFO", "reopen", `Reopened story "${state.story}" from "${previousStep}" to "${targetStep}"${options.humanNote ? ` note: "${options.humanNote}"` : ""}`);
 

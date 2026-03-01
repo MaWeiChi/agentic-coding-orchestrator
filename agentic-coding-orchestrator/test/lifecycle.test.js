@@ -8,14 +8,17 @@
  *   4. Crash recovery (CC exits without writing HANDOFF)
  *
  * These tests exist because unit tests on individual functions passed,
- * but production failed on the combined sequence. The gap was:
- *   - rollback() didn't clear HANDOFF.md → stale guard blocked next step
- *   - applyHandoff() marked "failing" when CC hadn't written HANDOFF yet
+ * but production failed on the combined sequence.
+ *
+ * Stale HANDOFF detection uses a two-layer guard:
+ *   1. Timestamp guard: HANDOFF.md mtime < state.dispatched_at → stale
+ *   2. Step-name guard: HANDOFF.step != STATE.step → stale
+ * rollback/reopen do NOT delete HANDOFF.md — the guards handle it.
  */
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-const { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } = require("fs");
+const { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync, utimesSync } = require("fs");
 const { join } = require("path");
 const { tmpdir } = require("os");
 
@@ -52,6 +55,17 @@ function writeHandoff(tempDir, yamlFields) {
   writeFileSync(join(tempDir, ".ai", "HANDOFF.md"), content, "utf-8");
 }
 
+/**
+ * Write a HANDOFF with mtime set to a past date (before any dispatch).
+ * This simulates a stale HANDOFF from a previous step.
+ */
+function writeStaleHandoff(tempDir, yamlFields) {
+  writeHandoff(tempDir, yamlFields);
+  const handoffPath = join(tempDir, ".ai", "HANDOFF.md");
+  const pastDate = new Date("2020-01-01T00:00:00Z");
+  utimesSync(handoffPath, pastDate, pastDate);
+}
+
 function handoffExists(tempDir) {
   return existsSync(join(tempDir, ".ai", "HANDOFF.md"));
 }
@@ -65,7 +79,7 @@ describe("lifecycle: rollback → dispatch → applyHandoff", () => {
   beforeEach(() => { tempDir = makeTempDir(); });
   afterEach(() => { rmSync(tempDir, { recursive: true, force: true }); });
 
-  it("rollback clears stale HANDOFF, fresh HANDOFF applies correctly", () => {
+  it("stale HANDOFF from previous step is rejected, fresh HANDOFF applies", () => {
     // 1. Pipeline reached verify with a HANDOFF from verify step
     setupState(tempDir, {
       story: "US-021",
@@ -77,20 +91,23 @@ describe("lifecycle: rollback → dispatch → applyHandoff", () => {
     writeHandoff(tempDir, { story: "US-021", step: "verify", status: "pass" });
     assert.ok(handoffExists(tempDir), "HANDOFF should exist before rollback");
 
-    // 2. User rolls back to scaffold
+    // 2. User rolls back to scaffold — HANDOFF.md is NOT deleted
+    //    (timestamp guard handles stale detection instead)
     const rbResult = rollback(tempDir, "scaffold");
     assert.equal(rbResult.type, "ok");
     assert.equal(rbResult.state.step, "scaffold");
-    assert.ok(!handoffExists(tempDir), "rollback must clear HANDOFF.md");
+    // HANDOFF still exists on disk — stale guard will handle it
+    assert.ok(handoffExists(tempDir), "HANDOFF.md preserved (timestamp guard handles stale)");
 
-    // 3. Dispatch scaffold step
+    // 3. Dispatch scaffold step (sets dispatched_at, making old HANDOFF stale)
     const dispResult = dispatch(tempDir);
     assert.equal(dispResult.type, "dispatched");
     assert.equal(dispResult.step, "scaffold");
 
-    // 4. Stop hook fires before CC writes HANDOFF → applyHandoff returns pending
-    const pendingResult = applyHandoff(tempDir);
-    assert.equal(pendingResult.type, "pending", "no HANDOFF + running → pending");
+    // 4. applyHandoff with old HANDOFF → step-name guard catches it
+    //    (HANDOFF.step="verify" != STATE.step="scaffold")
+    const staleResult = applyHandoff(tempDir);
+    assert.equal(staleResult.type, "stale", "step-name guard rejects verify HANDOFF for scaffold step");
 
     // 5. CC writes new HANDOFF for scaffold
     writeHandoff(tempDir, { story: "US-021", step: "scaffold", status: "pass" });
@@ -102,9 +119,10 @@ describe("lifecycle: rollback → dispatch → applyHandoff", () => {
     assert.equal(applyResult.state.status, "pass");
   });
 
-  it("without rollback fix: stale HANDOFF causes stale rejection (regression proof)", () => {
+  it("step-name guard rejects stale HANDOFF after rollback (regression proof)", () => {
     // This documents the exact bug from US-021 production.
     // After rollback, old HANDOFF step "verify" != new STATE step "scaffold".
+    // The step-name guard catches this regardless of HANDOFF file presence.
     setupState(tempDir, {
       story: "US-021",
       step: "verify",
@@ -114,15 +132,14 @@ describe("lifecycle: rollback → dispatch → applyHandoff", () => {
     });
     writeHandoff(tempDir, { story: "US-021", step: "verify", status: "pass" });
 
-    // Rollback now clears HANDOFF — verify it's gone
+    // Rollback to scaffold — HANDOFF.md remains on disk
     rollback(tempDir, "scaffold");
-    assert.ok(!handoffExists(tempDir), "HANDOFF cleared by rollback");
+    assert.ok(handoffExists(tempDir), "HANDOFF preserved (guards handle stale)");
 
-    // If someone manually restores the stale HANDOFF (simulating old behavior),
-    // the stale guard still protects us
-    writeHandoff(tempDir, { story: "US-021", step: "verify", status: "pass" });
-    dispatch(tempDir); // marks running
+    // Dispatch marks state as running with dispatched_at
+    dispatch(tempDir);
 
+    // Step-name guard: HANDOFF.step="verify" != STATE.step="scaffold"
     const result = applyHandoff(tempDir);
     assert.equal(result.type, "stale", "stale guard rejects mismatched step");
     assert.ok(result.message.includes("verify"), "message mentions stale step");
@@ -150,7 +167,7 @@ describe("lifecycle: rollback → dispatch → applyHandoff", () => {
     assert.equal(result.state.status, "pass");
   });
 
-  it("consecutive rollbacks: each clears HANDOFF", () => {
+  it("consecutive rollbacks: stale HANDOFFs rejected by guards", () => {
     setupState(tempDir, {
       story: "US-001",
       step: "commit",
@@ -160,12 +177,17 @@ describe("lifecycle: rollback → dispatch → applyHandoff", () => {
     });
     writeHandoff(tempDir, { story: "US-001", step: "commit", status: "failing" });
 
-    // Rollback to verify
+    // Rollback to verify — HANDOFF stays but guards will catch it
     rollback(tempDir, "verify");
-    assert.ok(!handoffExists(tempDir));
 
-    // Simulate CC completing verify
+    // Dispatch verify — sets dispatched_at
     dispatch(tempDir);
+
+    // Old HANDOFF has step="commit" but state is "verify" → step-name guard catches
+    const staleResult1 = applyHandoff(tempDir);
+    assert.equal(staleResult1.type, "stale", "commit HANDOFF rejected for verify step");
+
+    // CC writes fresh HANDOFF for verify
     writeHandoff(tempDir, { story: "US-001", step: "verify", status: "pass" });
     applyHandoff(tempDir);
 
@@ -177,12 +199,13 @@ describe("lifecycle: rollback → dispatch → applyHandoff", () => {
     writeHandoff(tempDir, { story: "US-001", step: "commit", status: "failing" });
 
     rollback(tempDir, "impl");
-    assert.ok(!handoffExists(tempDir), "second rollback also clears HANDOFF");
 
-    // Dispatch impl
+    // Dispatch impl — sets new dispatched_at
     dispatch(tempDir);
-    const pendingResult = applyHandoff(tempDir);
-    assert.equal(pendingResult.type, "pending", "no stale HANDOFF to confuse things");
+
+    // Old HANDOFF has step="commit" but state is "impl" → step-name guard catches
+    const staleResult2 = applyHandoff(tempDir);
+    assert.equal(staleResult2.type, "stale", "commit HANDOFF rejected for impl step");
   });
 });
 
@@ -195,7 +218,7 @@ describe("lifecycle: reopen → dispatch → applyHandoff", () => {
   beforeEach(() => { tempDir = makeTempDir(); });
   afterEach(() => { rmSync(tempDir, { recursive: true, force: true }); });
 
-  it("reopen clears stale HANDOFF from done step", () => {
+  it("reopen: stale HANDOFF from done step rejected by guards", () => {
     setupState(tempDir, {
       story: "US-010",
       step: "done",
@@ -207,12 +230,17 @@ describe("lifecycle: reopen → dispatch → applyHandoff", () => {
 
     const result = reopen(tempDir, "verify", { humanNote: "QA found regression" });
     assert.equal(result.type, "ok");
-    assert.ok(!handoffExists(tempDir), "reopen must clear HANDOFF.md");
+    // HANDOFF preserved — guards handle stale detection
+    assert.ok(handoffExists(tempDir), "HANDOFF preserved (guards handle stale)");
 
-    // Dispatch verify
+    // Dispatch verify — sets dispatched_at
     dispatch(tempDir);
 
-    // CC writes HANDOFF for verify
+    // Old HANDOFF has step="update-memory" but state is "verify" → step-name guard catches
+    const staleResult = applyHandoff(tempDir);
+    assert.equal(staleResult.type, "stale", "update-memory HANDOFF rejected for verify step");
+
+    // CC writes fresh HANDOFF for verify
     writeHandoff(tempDir, { story: "US-010", step: "verify", status: "pass" });
     const applyResult = applyHandoff(tempDir);
     assert.equal(applyResult.type, "applied");
@@ -289,7 +317,58 @@ describe("lifecycle: multi-step pipeline", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 4. Crash recovery
+// 4. Timestamp-based stale guard
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe("lifecycle: timestamp stale guard", () => {
+  let tempDir;
+  beforeEach(() => { tempDir = makeTempDir(); });
+  afterEach(() => { rmSync(tempDir, { recursive: true, force: true }); });
+
+  it("HANDOFF with old mtime rejected by timestamp guard", () => {
+    setupState(tempDir, {
+      story: "US-060",
+      step: "impl",
+      status: "pending",
+      attempt: 1,
+      max_attempts: 3,
+    });
+
+    // Write HANDOFF with matching step but old timestamp
+    writeStaleHandoff(tempDir, { story: "US-060", step: "impl", status: "pass" });
+
+    // Dispatch sets dispatched_at to now
+    dispatch(tempDir);
+
+    // HANDOFF has correct step but mtime is far in the past → timestamp guard catches
+    const result = applyHandoff(tempDir);
+    assert.equal(result.type, "stale", "timestamp guard rejects old HANDOFF");
+    assert.ok(result.message.includes("older than"), "message explains timestamp mismatch");
+  });
+
+  it("HANDOFF written after dispatch passes timestamp guard", () => {
+    setupState(tempDir, {
+      story: "US-060",
+      step: "impl",
+      status: "pending",
+      attempt: 1,
+      max_attempts: 3,
+    });
+
+    // Dispatch first (sets dispatched_at)
+    dispatch(tempDir);
+
+    // Write HANDOFF after dispatch — mtime > dispatched_at
+    writeHandoff(tempDir, { story: "US-060", step: "impl", status: "pass" });
+
+    const result = applyHandoff(tempDir);
+    assert.equal(result.type, "applied", "fresh HANDOFF passes both guards");
+    assert.equal(result.state.status, "pass");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 5. Crash recovery
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe("lifecycle: crash recovery", () => {
@@ -333,7 +412,7 @@ describe("lifecycle: crash recovery", () => {
     assert.equal(retryResult.attempt, 2);
   });
 
-  it("CC crash after rollback: no double-fault (pending, not failing)", () => {
+  it("CC crash after rollback: stale HANDOFF rejected, not double-fault", () => {
     setupState(tempDir, {
       story: "US-030",
       step: "verify",
@@ -343,18 +422,19 @@ describe("lifecycle: crash recovery", () => {
     });
     writeHandoff(tempDir, { story: "US-030", step: "verify", status: "failing" });
 
-    // Rollback to impl
+    // Rollback to impl — HANDOFF stays on disk
     rollback(tempDir, "impl");
-    assert.ok(!handoffExists(tempDir), "rollback clears HANDOFF");
+    assert.ok(handoffExists(tempDir), "HANDOFF preserved (guards handle stale)");
 
-    // Dispatch impl
+    // Dispatch impl — sets dispatched_at
     dispatch(tempDir);
 
-    // CC crashes without writing HANDOFF
+    // CC crashes without writing new HANDOFF.
+    // Old HANDOFF has step="verify" but state is "impl" → step-name guard catches.
     const result = applyHandoff(tempDir);
-    assert.equal(result.type, "pending", "no HANDOFF + running → pending (not failing)");
+    assert.equal(result.type, "stale", "verify HANDOFF rejected for impl step");
 
-    // State should still be running (not corrupted)
+    // State should still be running (not corrupted by stale HANDOFF)
     const state = readState(tempDir);
     assert.equal(state.status, "running");
     assert.equal(state.step, "impl");

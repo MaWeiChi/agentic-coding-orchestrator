@@ -122,11 +122,13 @@ fi
 # ---- Read task metadata ----
 TASK_NAME="unknown"
 GROUP=""
-
+CHANNEL=$(jq -r '.notify_channel // ""' "$META_FILE" 2>/dev/null || echo "")
+NOTIFY_TARGET=$(jq -r '.notify_target // ""' "$META_FILE" 2>/dev/null || echo "")
 if [ -f "$META_FILE" ]; then
     TASK_NAME=$(jq -r '.task_name // "unknown"' "$META_FILE" 2>/dev/null || echo "unknown")
     GROUP=$(jq -r '.group // ""' "$META_FILE" 2>/dev/null || echo "")
     log "Meta: task=$TASK_NAME group=$GROUP"
+    log "Notify: channel=$CHANNEL target=$NOTIFY_TARGET msg_len=${#MSG} openclaw=$(command -v ${OPENCLAW_BIN:-openclaw} 2>/dev/null || echo NOT_FOUND)"
 fi
 
 # ---- Write result JSON ----
@@ -165,8 +167,6 @@ fi
 
 # ---- Build plain-text notification message ----
 SENT=false
-CHANNEL=$(jq -r '.notify_channel // ""' "$META_FILE" 2>/dev/null || echo "")
-NOTIFY_TARGET=$(jq -r '.notify_target // ""' "$META_FILE" 2>/dev/null || echo "")
 OPENCLAW_BIN="${OPENCLAW_BIN:-openclaw}"
 
 build_notify_msg() {

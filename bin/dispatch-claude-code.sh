@@ -65,8 +65,15 @@ if [ -n "$FROM_ORCHESTRATOR" ]; then
         RAW_OUTPUT=$(orchestrator dispatch "$FROM_ORCHESTRATOR" 2>/dev/null)
     fi
 
-    # Still empty after retry — genuinely done or needs human
-    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"Already running"* ]] || [[ "$RAW_OUTPUT" == *"DONE:"* ]] || [[ "$RAW_OUTPUT" == *"NEEDS HUMAN"* ]]; then
+    # "Already running" after retry — state was dispatched externally or is stale.
+    # Use peek to get the prompt without re-dispatching (bypasses already_running guard).
+    if [[ "${RAW_OUTPUT:-}" == *"Already running"* ]]; then
+        echo "State already running after retry, using peek to get prompt..." >&2
+        RAW_OUTPUT=$(orchestrator peek "$FROM_ORCHESTRATOR" 2>/dev/null)
+    fi
+
+    # Still empty after all retries — genuinely done or needs human
+    if [ -z "$RAW_OUTPUT" ] || [[ "$RAW_OUTPUT" == *"DONE:"* ]] || [[ "$RAW_OUTPUT" == *"NEEDS HUMAN"* ]]; then
         echo "Orchestrator returned no actionable prompt (story may be done or needs human)" >&2
         echo "Last output: ${RAW_OUTPUT:-<empty>}" >&2
         exit 0

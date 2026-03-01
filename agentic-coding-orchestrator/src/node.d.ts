@@ -9,7 +9,7 @@ declare module "fs" {
   export function writeFileSync(path: string, data: string, encoding?: string): void;
   export function mkdirSync(path: string, options?: { recursive?: boolean }): string | undefined;
   export function readdirSync(path: string): string[];
-  export function statSync(path: string): { isDirectory(): boolean; isFile(): boolean };
+  export function statSync(path: string): { isDirectory(): boolean; isFile(): boolean; mtimeMs: number };
   export function unlinkSync(path: string): void;
   export function rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
 }
