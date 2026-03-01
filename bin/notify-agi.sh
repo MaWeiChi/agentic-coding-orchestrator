@@ -106,7 +106,7 @@ touch "$LOCK_FILE"
 
 # ---- Collect output ----
 OUTPUT=""
-sleep 1  # wait for tee flush
+# Note: removed `sleep 1` — it wasted 1 second of the 10-second hook timeout.
 
 TASK_OUTPUT="${RESULT_DIR}/task-output.txt"
 if [ -f "$TASK_OUTPUT" ] && [ -s "$TASK_OUTPUT" ]; then
@@ -128,7 +128,7 @@ if [ -f "$META_FILE" ]; then
     TASK_NAME=$(jq -r '.task_name // "unknown"' "$META_FILE" 2>/dev/null || echo "unknown")
     GROUP=$(jq -r '.group // ""' "$META_FILE" 2>/dev/null || echo "")
     log "Meta: task=$TASK_NAME group=$GROUP"
-    log "Notify: channel=$CHANNEL target=$NOTIFY_TARGET msg_len=${#MSG} openclaw=$(command -v ${OPENCLAW_BIN:-openclaw} 2>/dev/null || echo NOT_FOUND)"
+    log "Notify: channel=$CHANNEL target=$NOTIFY_TARGET openclaw=$(command -v ${OPENCLAW_BIN:-openclaw} 2>/dev/null || echo NOT_FOUND)"
 fi
 
 # ---- Write result JSON ----
@@ -216,27 +216,120 @@ build_notify_msg() {
     fi
 }
 
+# ---- Notification marker (dedup between Stop ↔ SessionEnd for sends only) ----
+# Session lock dedupes the ENTIRE hook (apply-handoff, write json, etc.).
+# Notify marker dedupes only the notification send — so SessionEnd can retry
+# if Stop's background send failed, without being blocked by session lock.
+NOTIFY_MARKER=""
+if [ -n "$SESSION_ID" ] && [ "$SESSION_ID" != "unknown" ]; then
+    NOTIFY_MARKER="${GLOBAL_LOCK_DIR}/.notify-${SESSION_ID}.sent"
+    # Clean up old markers (same TTL as session locks)
+    find "$GLOBAL_LOCK_DIR" -name '.notify-*.sent' -mmin +60 -delete 2>/dev/null || true
+    find "$GLOBAL_LOCK_DIR" -name '.notify-*.lock' -mmin +60 -type d -exec rmdir {} \; 2>/dev/null || true
+fi
+
+# ---- Resolve timeout command (macOS may only have gtimeout from coreutils) ----
+_TIMEOUT_CMD=""
+if command -v timeout &>/dev/null; then
+    _TIMEOUT_CMD="timeout"
+elif command -v gtimeout &>/dev/null; then
+    _TIMEOUT_CMD="gtimeout"
+fi
+
 if [ -n "$CHANNEL" ] && [ -n "$NOTIFY_TARGET" ] && command -v "$OPENCLAW_BIN" &>/dev/null; then
-    MSG=$(build_notify_msg)
-    MAX_RETRIES=3
-    RETRY_DELAY=2
-    SENT=false
+    # Already sent by a previous event (Stop bg succeeded before SessionEnd)?
+    if [ -n "$NOTIFY_MARKER" ] && [ -f "$NOTIFY_MARKER" ]; then
+        log "NOTIFY_RESULT: SKIPPED (already sent for session $SESSION_ID)"
+        SENT=true
+    else
+        MSG=$(build_notify_msg)
+        log "Sending $CHANNEL notification in background (msg_len=${#MSG})..."
 
-    for i in $(seq 1 "$MAX_RETRIES"); do
-        if "$OPENCLAW_BIN" message send \
-            --channel "$CHANNEL" \
-            --target "$NOTIFY_TARGET" \
-            --message "$MSG" >> "$LOG" 2>&1; then
-            log "Sent $CHANNEL message to $NOTIFY_TARGET (attempt $i)"
-            SENT=true
-            break
-        else
-            log "$CHANNEL send failed (attempt $i/$MAX_RETRIES)"
-            [ "$i" -lt "$MAX_RETRIES" ] && sleep "$RETRY_DELAY"
-        fi
-    done
+        # [FIX P0] Run openclaw in a detached background process.
+        # Root cause: Claude Code hook timeout is 10 seconds. The hook spends
+        # ~3-4s on apply-handoff, and openclaw needs ~5-7s for the WhatsApp API call.
+        # Total 8-11s often exceeds the 10s limit → hook killed → no notification.
+        #
+        # Design:
+        #   - Background subshell sends notification asynchronously
+        #   - Uses mkdir as atomic send lock (prevents concurrent Stop+SessionEnd sends)
+        #   - On success: writes notify marker + session lock
+        #   - On failure: no marker → SessionEnd can retry
+        #   - Main process does NOT lock session → SessionEnd re-runs full hook
+        #     (apply-handoff is idempotent, so this is safe)
+        #   - EXIT trap guarantees a NOTIFY_RESULT line in hook.log no matter what
+        #   - Timeout on openclaw prevents infinite hang
+        (
+            # ---- Guaranteed result logging ----
+            # No matter how this subshell exits (success, failure, signal, crash),
+            # the EXIT trap ensures a NOTIFY_RESULT line is written to hook.log.
+            _NOTIFY_OUTCOME="UNKNOWN (subshell exited without setting result)"
+            trap '
+                echo "[$(date -Iseconds)] NOTIFY_RESULT: $_NOTIFY_OUTCOME" >> "$LOG"
+                rmdir "$SEND_LOCK" 2>/dev/null
+            ' EXIT
 
-    [ "$SENT" = false ] && log "$CHANNEL send failed after $MAX_RETRIES attempts"
+            # Acquire send lock (atomic via mkdir) to prevent concurrent sends
+            SEND_LOCK="${GLOBAL_LOCK_DIR}/.notify-${SESSION_ID}.lock"
+            if ! mkdir "$SEND_LOCK" 2>/dev/null; then
+                _NOTIFY_OUTCOME="SKIPPED (another send in progress)"
+                exit 0
+            fi
+
+            # Double-check marker after acquiring lock
+            if [ -n "${NOTIFY_MARKER:-}" ] && [ -f "$NOTIFY_MARKER" ]; then
+                _NOTIFY_OUTCOME="SKIPPED (already sent, checked after lock)"
+                exit 0
+            fi
+
+            MAX_RETRIES=2
+            RETRY_DELAY=2
+            _SENT=false
+
+            for i in $(seq 1 "$MAX_RETRIES"); do
+                # Use timeout (15s) to prevent openclaw from hanging forever
+                if [ -n "$_TIMEOUT_CMD" ]; then
+                    _SEND_CMD="$_TIMEOUT_CMD 15 $OPENCLAW_BIN"
+                else
+                    _SEND_CMD="$OPENCLAW_BIN"
+                fi
+
+                if $_SEND_CMD message send \
+                    --channel "$CHANNEL" \
+                    --target "$NOTIFY_TARGET" \
+                    --message "$MSG" >> "$LOG" 2>&1; then
+                    _SENT=true
+                    break
+                else
+                    _EXIT_CODE=$?
+                    if [ "$_EXIT_CODE" -eq 124 ]; then
+                        echo "[$(date -Iseconds)] $CHANNEL send timed out (attempt $i/$MAX_RETRIES)" >> "$LOG"
+                    else
+                        echo "[$(date -Iseconds)] $CHANNEL send failed exit=$_EXIT_CODE (attempt $i/$MAX_RETRIES)" >> "$LOG"
+                    fi
+                    [ "$i" -lt "$MAX_RETRIES" ] && sleep "$RETRY_DELAY"
+                fi
+            done
+
+            if [ "$_SENT" = true ]; then
+                # Mark notification as sent (dedup for SessionEnd)
+                [ -n "${NOTIFY_MARKER:-}" ] && touch "$NOTIFY_MARKER"
+                # Lock session (dedup for full hook re-run)
+                [ -n "${SESSION_LOCK:-}" ] && touch "$SESSION_LOCK"
+                _NOTIFY_OUTCOME="SUCCESS — $CHANNEL to $NOTIFY_TARGET (attempt $i)"
+            else
+                _NOTIFY_OUTCOME="FAILED after $MAX_RETRIES attempts — SessionEnd will retry"
+            fi
+        ) &
+        disown
+    fi
+else
+    # Log why notification was skipped
+    if [ -z "$CHANNEL" ] || [ -z "$NOTIFY_TARGET" ]; then
+        log "NOTIFY_RESULT: SKIPPED (channel='$CHANNEL' target='$NOTIFY_TARGET' — missing config)"
+    elif ! command -v "$OPENCLAW_BIN" &>/dev/null; then
+        log "NOTIFY_RESULT: SKIPPED ($OPENCLAW_BIN not found)"
+    fi
 fi
 
 # ---- Write pending-wake (fallback for AGI polling) ----
@@ -251,17 +344,24 @@ jq -n \
 log "Wrote pending-wake.json"
 
 # ---- Finalize session lock ----
-# Only lock the session if notification succeeded (or no notification configured).
-# If notification failed, leave unlocked so next event can retry.
+# When notification is required: do NOT lock session here.
+# The background send process will lock on success.
+# This ensures SessionEnd can retry the full hook if the send failed.
 NOTIFY_REQUIRED=false
 [ -n "$CHANNEL" ] && [ -n "$NOTIFY_TARGET" ] && NOTIFY_REQUIRED=true
 
 if [ -n "$SESSION_LOCK" ]; then
-    if [ "$NOTIFY_REQUIRED" = false ] || [ "$SENT" = true ]; then
+    if [ "$NOTIFY_REQUIRED" = false ]; then
         touch "$SESSION_LOCK"
-        log "Session $SESSION_ID locked (done)"
+        log "Session $SESSION_ID locked (done, no notification needed)"
+    elif [ "$SENT" = true ]; then
+        # Notification was already confirmed sent (marker found) — lock immediately
+        touch "$SESSION_LOCK"
+        log "Session $SESSION_ID locked (notification already confirmed)"
     else
-        log "Session $SESSION_ID NOT locked (notify failed, will retry)"
+        # Notification is in flight (background send) — don't lock yet.
+        # Background will lock on success; if it fails, SessionEnd retries.
+        log "Session $SESSION_ID: lock deferred to background send"
     fi
 fi
 
