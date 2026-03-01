@@ -282,30 +282,36 @@ if [ -n "$CHANNEL" ] && [ -n "$NOTIFY_TARGET" ] && command -v "$OPENCLAW_BIN" &>
                 exit 0
             fi
 
-            MAX_RETRIES=2
-            RETRY_DELAY=2
+            MAX_RETRIES=3
+            RETRY_DELAY=3
             _SENT=false
 
             for i in $(seq 1 "$MAX_RETRIES"); do
-                # Use timeout (15s) to prevent openclaw from hanging forever
+                # Use timeout (30s) to prevent openclaw from hanging forever.
+                # Background process is detached from hook timeout, so we can be generous.
+                # openclaw cold-starts or API latency can easily exceed 15s.
                 if [ -n "$_TIMEOUT_CMD" ]; then
-                    _SEND_CMD="$_TIMEOUT_CMD 15 $OPENCLAW_BIN"
+                    _SEND_CMD="$_TIMEOUT_CMD 30 $OPENCLAW_BIN"
                 else
                     _SEND_CMD="$OPENCLAW_BIN"
                 fi
 
+                _T_START=$(date +%s)
                 if $_SEND_CMD message send \
                     --channel "$CHANNEL" \
                     --target "$NOTIFY_TARGET" \
                     --message "$MSG" >> "$LOG" 2>&1; then
+                    _T_ELAPSED=$(( $(date +%s) - _T_START ))
                     _SENT=true
+                    echo "[$(date -Iseconds)] $CHANNEL send OK in ${_T_ELAPSED}s (attempt $i/$MAX_RETRIES)" >> "$LOG"
                     break
                 else
                     _EXIT_CODE=$?
+                    _T_ELAPSED=$(( $(date +%s) - _T_START ))
                     if [ "$_EXIT_CODE" -eq 124 ]; then
-                        echo "[$(date -Iseconds)] $CHANNEL send timed out (attempt $i/$MAX_RETRIES)" >> "$LOG"
+                        echo "[$(date -Iseconds)] $CHANNEL send timed out after ${_T_ELAPSED}s (attempt $i/$MAX_RETRIES)" >> "$LOG"
                     else
-                        echo "[$(date -Iseconds)] $CHANNEL send failed exit=$_EXIT_CODE (attempt $i/$MAX_RETRIES)" >> "$LOG"
+                        echo "[$(date -Iseconds)] $CHANNEL send failed exit=$_EXIT_CODE after ${_T_ELAPSED}s (attempt $i/$MAX_RETRIES)" >> "$LOG"
                     fi
                     [ "$i" -lt "$MAX_RETRIES" ] && sleep "$RETRY_DELAY"
                 fi
